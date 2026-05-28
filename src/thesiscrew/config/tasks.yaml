@@ -1,0 +1,365 @@
+# ---------------------------------------------------------------------------
+# Phase 1 — Data Discovery & Ingestion
+# ---------------------------------------------------------------------------
+
+station_discovery_task:
+  description: >
+    Research and document all available hydrometric data sources for water level
+    forecasting. For the primary target station Korneuburg (Danube, Austria) and
+    at least two alternatives (e.g., Passau on the Donau, Wien):
+
+    1. Query the Pegelonline REST API (v2) — list stations with timeseries
+       availability (W, Q, WT, WV). Confirm which stations publish official
+       forecasts (WV series).
+    2. Explore eHYD / DORIS portals for Austrian gauge data — document access
+       patterns (REST/SOAP/CSV), available parameters, and temporal resolution.
+    3. Check Open-Meteo API for historical and forecast precipitation,
+       temperature, and snow data covering the upstream catchment area.
+    4. For each source, record: base URL, auth requirements, rate limits,
+       available parameters, temporal granularity, date range, and known gaps.
+    5. Produce a data-availability matrix summarizing which parameters exist
+       at which station, with completeness estimates (% non-null per year).
+  expected_output: >
+    A structured data-availability report containing:
+    - API endpoint documentation for Pegelonline, eHYD/DORIS, and Open-Meteo
+    - Station metadata table (UUID, name, water body, coordinates, available timeseries)
+    - Forecast availability confirmation (WV yes/no per station)
+    - Data completeness estimates per parameter per year
+    - Recommended primary and fallback station with justification
+  agent: data_researcher
+
+data_ingestion_task:
+  description: >
+    Build and execute ETL pipelines to ingest raw data from all validated sources
+    into the PegelHub database schema (stations, measurements, official_forecasts,
+    weather_data tables).
+
+    1. Implement fetchers for Pegelonline (stations, measurements CSV/JSON,
+       forecast timeseries WV), eHYD (historical water levels, discharge), and
+       Open-Meteo (precipitation, temperature, snow depth).
+    2. Apply preprocessing: resample to hourly grid (mean/last-value interpolation),
+       forward-fill gaps under 3 hours, interpolate medium gaps (3-12h), discard
+       longer gaps. Remove outliers via z-score > 4 or physically impossible jumps
+       (>200 cm in 15 min).
+    3. Standardize units: water level cm, discharge m³/s, precipitation mm,
+       temperature °C.
+    4. Deduplicate records on (station_id, timestamp, parameter) — make ingestion
+       idempotent.
+    5. Verify at least 2 years of hourly water-level data at the primary station;
+       flag any extended gaps to the team.
+  expected_output: >
+    - Populated PegelHub tables: stations, measurements, official_forecasts,
+      weather_data
+    - Ingestion scripts (idempotent, rerunnable)
+    - Data quality report: row counts per table, gap analysis, coverage dates
+    - Confirmation of ≥2 years hourly data at primary station or explicit
+      documentation of insufficiency
+  agent: data_engineer
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Feature Engineering & Baselines
+# ---------------------------------------------------------------------------
+
+feature_engineering_task:
+  description: >
+    Transform raw ingested data into a model-ready feature set covering all
+    feature categories from the forecasting plan.
+
+    Endogenous (lagged) features:
+    - water_level at t-1, t-3, t-6, t-12, t-24, t-168 (hours)
+    - same-time-yesterday, same-time-last-week
+    - rolling mean (3h, 6h, 24h), rolling std (6h, 24h)
+    - rate_of_change (first derivative) and acceleration (second derivative)
+
+    Spatial (upstream) features:
+    - upstream water level at travel-time lag (estimate lag via cross-correlation)
+    - upstream rate of change
+    - downstream water level (backwater boundary)
+    - upstream catchment average precipitation
+
+    Meteorological features:
+    - accumulated precipitation over 3h, 6h, 12h, 24h, 48h, 72h windows
+    - forecast precipitation at lead time (from Open-Meteo)
+    - daily min/max temperature, rolling mean temperature
+    - snow depth / snow water equivalent
+    - antecedent precipitation index (API) — exponentially weighted rainfall
+
+    Calendar features:
+    - sin/cos encoded hour-of-day, day-of-week, day-of-year
+    - is_weekend, is_holiday binary flags
+
+    Official forecast features (meta-learning):
+    - official_forecast value at horizon h
+    - forecast spread (upper CI − lower CI)
+    - forecast age in hours
+
+    Derived features:
+    - flood_risk_score (current level + rate of rise + upstream levels + rainfall)
+    - time_since_peak_hours
+
+    Output a single feature matrix CSV/Parquet aligned on hourly timestamps,
+    with a clear column manifest documenting every feature name, source, and
+    transformation applied.
+  expected_output: >
+    - Feature matrix (Parquet or CSV) with all engineered features on hourly grid
+    - Feature manifest: each column → source, transformation, category
+    - Lag estimation result: cross-correlation peak for upstream travel time
+    - Train/validation/test split indices (chronological 70/15/15)
+  agent: feature_engineer
+
+baseline_modeling_task:
+  description: >
+    Implement and evaluate Tier 1 baseline models to establish skill anchors
+    before building AI models.
+
+    1. Persistence model: predict water_level at t+h = water_level at t.
+       Compute RMSE, MAE, NSE for horizons +1h, +6h, +12h, +24h, +48h.
+    2. ARIMA / Exponential Smoothing: fit on training split, forecast all
+       horizons, compute same metrics.
+    3. Linear regression: multivariate baseline using lagged water levels,
+       upstream levels, and accumulated rainfall as features. Evaluate on
+       the same test split.
+    4. If official forecast (WV) data is available, compute its metrics
+       directly as the benchmark to beat.
+
+    Store all predictions and metrics in a standardized results dict so
+    downstream models can be compared against these baselines.
+  expected_output: >
+    - Baseline predictions CSV for each model × horizon
+    - Metrics table: RMSE, MAE, MAPE, NSE, bias per baseline per horizon
+    - Official forecast metrics (if WV available) as the reference benchmark
+    - Serialized baseline model objects for reuse
+  agent: model_developer
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Model Development
+# ---------------------------------------------------------------------------
+
+model_training_task:
+  description: >
+    Train and optimize Tier 2 forecasting models using the engineered feature
+    set. Work across all horizons: +1h, +6h, +12h, +24h, +48h, +72h, +168h.
+
+    XGBoost / LightGBM:
+    - Train on the tabular feature set (lag features, upstream, weather, calendar,
+      official forecast).
+    - Hyperparameter tuning via time-series cross-validation (walk-forward).
+    - Key hyperparameters: n_estimators, max_depth, learning_rate, subsample,
+      colsample_bytree, regularisation.
+    - Compute SHAP feature importance per horizon.
+
+    LSTM (sequence-to-vector):
+    - Train on sliding windows of raw/partially-featured time series.
+    - Architecture: 1-2 LSTM layers → dense head predicting water_level at h.
+    - Hyperparameter tuning: hidden size, num_layers, learning_rate, sequence
+      length, dropout.
+    - If feasible, add attention layer and extract attention weights for
+      interpretability.
+
+    Ensemble (optional, if time):
+    - Stack XGBoost predictions + LSTM predictions with a meta-learner.
+    - Or blend via weighted average.
+
+    For every model × horizon, log: predictions on test set, all metrics,
+    training time, and feature importance.
+  expected_output: >
+    - Trained model artifacts (serialized XGBoost, LSTM weights)
+    - Test-set predictions CSV per model × horizon
+    - Metrics table: RMSE, MAE, MAPE, NSE, bias per model per horizon
+    - SHAP summary plots for tree models
+    - Attention weight visualizations for LSTM (if applicable)
+    - Comparison table: all models vs baselines vs official forecast
+  agent: model_developer
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Integration & Frontend
+# ---------------------------------------------------------------------------
+
+api_integration_task:
+  description: >
+    Package trained models into a deployable forecasting service integrated
+    with PegelHub.
+
+    1. Store all model predictions in the PegelHub model_predictions table
+       with columns: station_id, run_timestamp, model_version, horizon_h,
+       predicted_value, actual_value, error_metrics.
+    2. Build a REST API endpoint:
+       GET /api/forecast/<station>?horizon=24h&model=xgboost
+       Returns JSON with: predicted_value, lower_ci, upper_ci, official_forecast,
+       measured_value, run_timestamp.
+    3. Implement a scheduled job (APScheduler or cron) that:
+       - Fetches latest measurements from Pegelonline / eHYD
+       - Re-runs feature engineering on the new data window
+       - Produces updated predictions and stores them
+    4. Add health-check endpoint and basic error handling.
+  expected_output: >
+    - REST API with forecast endpoint (documented with OpenAPI/Swagger)
+    - Scheduler script for automated data refresh and prediction updates
+    - Model_predictions table populated with sample predictions
+    - Health-check endpoint responding 200
+  agent: integration_specialist
+
+frontend_task:
+  description: >
+    Build a lightweight visualization layer for forecast results.
+
+    Option A (Web Dashboard — preferred if time allows):
+    - Time-series chart showing: measured water level (solid), AI forecast
+      (dashed), official forecast (dotted), confidence band (shaded area),
+      threshold lines (MW96, warning levels).
+    - Station selector dropdown.
+    - Forecast horizon selector (1h, 6h, 24h, 48h, 7d).
+    - Toggle overlay: show/hide official forecast, confidence intervals.
+    - Skill-score panel: last-24h model accuracy vs baseline.
+    - Alert panel: current status vs characteristic thresholds.
+
+    Option B (Excel Report — fallback):
+    - CSV export with columns: timestamp, measured_level, ai_forecast,
+      official_forecast, lower_ci, upper_ci, error.
+    - Excel line chart with multiple series and shaded CI.
+    - Summary table: RMSE, MAE, NSE per horizon for selected period.
+
+    Use the REST API from api_integration_task as data source.
+  expected_output: >
+    - Working web dashboard (HTML+JS) or Excel report template
+    - Screenshot or sample output demonstrating measured vs AI vs official
+      forecast visualization
+    - Brief user guide (how to select station, change horizon, interpret chart)
+  agent: integration_specialist
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Verification & Documentation
+# ---------------------------------------------------------------------------
+
+verification_task:
+  description: >
+    Perform rigorous forecast verification against official forecasts and
+    baselines. This is the critical evaluation step required by the use case:
+    "Explore available data that also includes original forecast data, so that
+    appropriate verification can be carried out."
+
+    1. Walk-forward validation: slide a training window forward in time,
+       evaluate on each subsequent test block. Report average and spread of
+       metrics.
+    2. Stratified evaluation — compute metrics separately for:
+       - Flow regimes: low water, normal, elevated, warning, alert levels
+         (using MW96 and characteristic thresholds)
+       - Seasons: winter, spring melt, summer storms, autumn
+       - Upstream conditions: with vs without upstream rainfall events
+    3. Compute full metric suite per stratum:
+       RMSE, MAE, MAPE, NSE, bias, CRPS (if probabilistic forecasts exist).
+    4. Produce comparative charts:
+       - Time-series overlay: measured vs AI forecast vs official forecast
+         with confidence bands and threshold lines.
+       - Scatter plots: predicted vs actual per horizon.
+       - Error distribution histograms.
+    5. Identify failure modes: when does the model deviate most? Flood peaks?
+       Rapid rises? Snowmelt events?
+    6. Document: can the AI model beat the official forecast in any regime
+       or horizon? If so, where exactly?
+  expected_output: >
+    - Walk-forward validation results (metrics per fold)
+    - Stratified metrics tables (by flow regime, season, upstream condition)
+    - Comparative time-series charts (AI vs official vs measured)
+    - Scatter plots and error distribution plots
+    - Failure-mode analysis: conditions under which model degrades
+    - Verdict summary: which model, which horizons, which regimes beat the
+      official forecast
+  agent: verification_analyst
+
+final_documentation_task:
+  description: >
+    Compile the complete thesis project documentation covering all phases.
+
+    1. Data sources: APIs used, stations selected, parameters retrieved,
+       data completeness, gaps, and preprocessing decisions.
+    2. Feature engineering: full feature manifest with transformations and
+       rationale (why each feature matters hydrologically).
+    3. Model architecture: baseline choices, XGBoost configuration, LSTM
+       architecture, ensemble strategy, hyperparameter ranges explored.
+    4. Results: metric tables, comparison vs official forecast, stratified
+       results, feature importance rankings, failure-mode analysis.
+    5. Integration: API documentation, scheduler setup, frontend guide.
+    6. Reproducibility: requirements.txt / pyproject.toml, data paths,
+       random seeds, step-by-step run instructions.
+    7. Limitations and future work: data gaps, model ceilings, potential
+       improvements (TFT, physics-informed approaches, longer history).
+  expected_output: >
+    - README.md with project overview, setup, and run instructions
+    - Full methodology documentation (data → features → models → evaluation)
+    - Reproducibility guide: dependencies, configuration, random seeds
+    - Known limitations and recommended future work
+  agent: verification_analyst
+
+# ---------------------------------------------------------------------------
+# Phase 5b — Report Compilation
+# ---------------------------------------------------------------------------
+
+report_writing_task:
+  description: >
+    Compile a comprehensive, thesis-ready Markdown report at output/report.md
+    that documents the entire water-level forecasting workflow from data discovery
+    through verification. This report must be self-contained and include:
+
+    1. **Executive Summary** — one-paragraph overview of the project goal, target
+       station (Korneuburg / Danube), and final results (best model, best horizon,
+       whether it beats the official forecast).
+
+    2. **Data Discovery** — for each source (Pegelonline, eHYD, Open-Meteo):
+       API endpoint, auth requirements, available parameters, temporal resolution,
+       date range, data completeness percentages, and any gaps found. Include a
+       data-availability matrix table. State which station was selected as primary
+       and why, and which alternative stations were evaluated.
+
+    3. **Data Ingestion & Preprocessing** — ETL pipeline description, row counts
+       per table (stations, measurements, official_forecasts, weather_data), gap
+       handling strategy (forward-fill under 3h, interpolation 3-12h, discard >12h),
+       outlier removal criteria (z-score > 4, physical impossibility), unit
+       standardization (cm, m³/s, mm, °C), and the chronological train/val/test
+       split (70/15/15).
+
+    4. **Feature Engineering** — full feature manifest table listing every feature
+       name, source column, transformation applied, and hydrological rationale.
+       Organize by category: endogenous (lagged), spatial (upstream),
+       meteorological, calendar, official forecast (meta-learning), and derived.
+       Include the cross-correlation lag estimation for upstream stations and the
+       train/validation/test split date ranges.
+
+    5. **Baseline Models** — persistence, ARIMA, linear regression results.
+       Metrics table: RMSE, MAE, MAPE, NSE, bias per baseline per horizon. Include
+       official forecast metrics (if WV available) as the benchmark.
+
+    6. **Model Development** — XGBoost/LightGBM configuration (hyperparameters
+       explored, best configuration), LSTM architecture (layers, hidden size,
+       sequence length, dropout), ensemble strategy (if used). SHAP feature
+       importance ranking for tree models. Attention weight summary for LSTM.
+       Training time per model. Comparison table: all models vs baselines vs
+       official forecast, per horizon.
+
+    7. **Verification** — walk-forward validation results (metrics per fold),
+       stratified evaluation tables (by flow regime, season, upstream condition),
+       comparative chart descriptions (measured vs AI vs official with confidence
+       bands), scatter plot descriptions, error distribution descriptions.
+       Failure-mode analysis: conditions under which the model degrades. Verdict:
+       which model, which horizons, which regimes beat the official forecast.
+
+    8. **Integration** — REST API endpoint documentation, scheduler setup,
+       frontend description (dashboard or Excel), sample API response.
+
+    9. **Reproducibility** — dependencies (pyproject.toml), data paths, random
+       seeds, step-by-step run instructions.
+
+    10. **Limitations & Future Work** — data gaps, model ceilings, potential
+        improvements (TFT, physics-informed approaches, longer history, additional
+        upstream stations).
+
+    Use proper Markdown: ## headers, ### sub-headers, | tables |, ``` code
+    blocks, and **bold** for emphasis. Write in academic English suitable for a
+    thesis appendix.
+  expected_output: >
+    A single, well-structured Markdown file at output/report.md containing all
+    sections listed above. The file must be self-contained — every metric,
+    every feature, every decision must be documented. If any section has no
+    data (e.g., no official forecast available), state that explicitly rather
+    than leaving it blank. Include all metric tables in Markdown table format.
+  agent: report_writer

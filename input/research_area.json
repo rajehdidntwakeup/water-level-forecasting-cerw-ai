@@ -1,0 +1,45 @@
+{
+  "primary_station": "Korneuburg",
+  "primary_station_ehyd_id": "207273",
+  "river": "Donau",
+  "country": "Austria",
+  "latitude": 48.345,
+  "longitude": 16.337,
+  "alternative_stations": [
+    {
+      "name": "Wien / Reichsbrücke",
+      "ehyd_id": "207237",
+      "river": "Donau",
+      "role": "alternative"
+    },
+    {
+      "name": "Linz-Donau",
+      "ehyd_id": "207070",
+      "river": "Donau",
+      "role": "upstream"
+    }
+  ],
+  "forecast_horizons_hours": [1, 6, 12, 24, 48, 72, 168],
+  "data_sources": {
+    "pegelonline": {
+      "base_url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2",
+      "auth": "none"
+    },
+    "ehyd": {
+      "base_url": "https://ehyd.gv.at",
+      "auth": "none"
+    },
+    "open_meteo": {
+      "archive_url": "https://archive-api.open-meteo.com/v1",
+      "forecast_url": "https://api.open-meteo.com/v1/forecast",
+      "auth": "none"
+    }
+  },
+  "target_variable": "water_level_cm",
+  "train_test_split": {
+    "train": 0.70,
+    "validation": 0.15,
+    "test": 0.15
+  },
+  "min_data_years": 2
+}
