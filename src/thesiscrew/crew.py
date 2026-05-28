@@ -83,6 +83,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['data_researcher'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 ListStationsTool(),
                 StationDetailTool(),
@@ -105,6 +107,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['data_engineer'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 GetMeasurementsTool(),
                 GetMeasurementsCSVTool(),
@@ -127,6 +131,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['feature_engineer'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 LagFeaturesTool(),
                 RollingFeaturesTool(),
@@ -146,6 +152,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['model_developer'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 PersistenceBaselineTool(),
                 WalkForwardTool(),
@@ -165,6 +173,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['integration_specialist'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 ListDataFilesTool(),
                 CSVSummaryTool(),
@@ -181,6 +191,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['verification_analyst'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 ComputeMetricsTool(),
                 StratifiedMetricsTool(),
@@ -198,6 +210,8 @@ class Thesiscrew():
         return Agent(
             config=self.agents_config['report_writer'],
             verbose=True,
+            allow_delegation=False,
+            max_retry_limit=5,
             tools=[
                 ReadReportTool(),
                 WriteReportTool(),
