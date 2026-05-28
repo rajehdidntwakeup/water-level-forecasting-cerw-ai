@@ -1,100 +1,155 @@
-# Thesiscrew Crew
+# Water Level Forecasting Crew (ThesisCrew)
 
-## Agentic AI Code Analysis System
-
-A multi-agent crew built with CrewAI for automated Java code analysis, security scanning, and technical report generation.
+AI-powered water level forecasting system built with CrewAI for the PegelHub / TEVS thesis project. A multi-agent crew discovers hydrometric data, engineers features, trains ML models, verifies against official forecasts, and compiles a thesis-ready report.
 
 ## Overview
 
-This project implements three specialized AI agents that work together to analyze Java directories, identify security vulnerabilities, and produce consolidated technical reports:
+Six specialized agents work sequentially through five phases:
 
-| Agent | Role | Key Tools |
-|-------|------|-----------|
-| `code_reviewer` | Senior Java Code Reviewer | `JavaDirectoryReviewTool`, `ASTChunkerTool`, `ReadInputTool` |
-| `proposal_writer` | Code Security Agent | `JavaDirectoryVulnerabilityScannerTool`, `VulnerabilityScannerTool` |
-| `summary_writer` | Technical Report Specialist | `SummaryBuilderTool` |
+| Agent | Role | Phase |
+|-------|------|-------|
+| `data_researcher` | Hydrometric Data Researcher | 1 — Data Discovery |
+| `data_engineer` | Data Ingestion & Preprocessing Engineer | 1 — Data Ingestion |
+| `feature_engineer` | Hydrological Feature Engineer | 2 — Feature Engineering |
+| `model_developer` | ML Forecasting Model Developer | 2–3 — Baselines & Training |
+| `verification_analyst` | Forecast Verification & Evaluation Analyst | 5 — Verification |
+| `integration_specialist` | Forecast Integration & Deployment Specialist | 4 — Integration |
+| `report_writer` | Technical Report Writer & Documentation Specialist | 5b — Report |
+
+**Target station:** Korneuburg / Donau (Danube), Austria
+
+**Forecast horizons:** +1h (nowcast) through +168h (7 days)
 
 ## Project Structure
 
 ```
 src/thesiscrew/
-├── crew.py                 # Crew orchestration and configuration
-├── main.py                 # Entry point for running the crew
+├── crew.py                          # Crew orchestration, agent & task wiring
+├── main.py                          # Entry point
 ├── config/
-│   ├── agents.yaml         # Agent roles, goals, and backstories
-│   └── tasks.yaml          # Task definitions, dependencies, and outputs
+│   ├── agents.yaml                  # 7 agent definitions
+│   └── tasks.yaml                   # 10 task definitions (5 phases)
 ├── tools/
-│   ├── java_directory_review_tool.py    # Reads and reviews Java files in a directory
-│   ├── java_directory_vulnerability_scanner_tool.py # Scans Java directories for security flaws
-│   ├── ast_chunker_tool.py              # Parses code into AST-based chunks
-│   ├── vulnerability_scanner_tool.py    # Core security scanning logic
-│   ├── summary_builder_tool.py          # Consolidates reports into output.md
-│   └── read_input_tool.py               # Reads project input context
+│   ├── pegelonline_tool.py          # Pegelonline REST API (6 tools)
+│   ├── open_meteo_tool.py           # Open-Meteo weather API (4 tools)
+│   ├── ehyd_tool.py                 # eHYD Austrian data (4 tools)
+│   ├── data_processing_tool.py      # Data I/O, cleaning, features (11 tools)
+│   ├── model_evaluation_tool.py     # Baselines, walk-forward, metrics (5 tools)
+│   ├── read_input_tool.py           # Input file reader
+│   └── report_writer_tool.py        # Report MD writer, TOC, metrics, tables (6 tools)
+├── mcp/
+│   ├── pegelonline_server.py        # MCP server for Pegelonline API
+│   ├── open_meteo_server.py         # MCP server for Open-Meteo API
+│   ├── ehyd_server.py               # MCP server for eHYD API
+│   ├── data_processing_server.py    # MCP server for data processing
+│   └── report_server.py            # MCP server for report generation
 └── knowledge/
-    └── user_preference.txt   # User context for agents
+    └── water-level-forecasting-plan.md   # Full forecasting methodology
 ```
+
+## Data Sources
+
+| Source | Data | API |
+|--------|------|-----|
+| **Pegelonline** (WSV, Germany) | Water level (W), discharge (Q), temperature (WT), forecast (WV) | REST API, no auth |
+| **eHYD / DORIS** (Austria) | Historical water levels, discharge, characteristic values | REST/CSV |
+| **Open-Meteo** | Historical & forecast precipitation, temperature, snow depth | REST API, no auth (non-commercial) |
 
 ## Installation
 
-This project uses `uv` for dependency management.
+```powershell
+# Clone and install dependencies
+git clone <repo-url>
+cd water-level-forecasting-cerw-ai
+uv sync
+```
 
-1. Clone the repository
-2. Install dependencies:
-   ```powershell
-   uv sync
-   ```
-3. Configure environment variables in `.env`:
-   ```
-   BASE_URL=http://localhost:11434
-   MODEL=ollama/qwen3.5:cloud
-   OLLAMA_API_KEY=your-api-key
-   ```
+Configure `.env`:
+```
+BASE_URL=http://localhost:11434
+MODEL=ollama/qwen3.5:cloud
+OLLAMA_API_KEY=your-api-key
+```
 
 ## Usage
 
-Run the crew:
 ```powershell
+# Run the full crew pipeline
 uv run run_crew
-```
-Or directly via the main script:
-```powershell
+
+# Or directly
 uv run python src/thesiscrew/main.py
 ```
 
-## Tools
+Input is read from `input/research_area.json` (station config, horizons, data sources).
 
-### JavaDirectoryReviewTool
-Navigates a specified directory to find all Java source files and performs a detailed review for bugs, anti-patterns, and best practices.
+## Tools (27 total)
 
-### JavaDirectoryVulnerabilityScannerTool
-Specifically designed to scan Java projects for security vulnerabilities, identifying risks and suggesting remediation steps.
+### Data Discovery (Pegelonline)
+- `ListStationsTool` — List all gauge stations, filter by timeseries
+- `StationDetailTool` — Station metadata + current measurements
+- `GetMeasurementsTool` — Historical measurements (JSON)
+- `GetMeasurementsCSVTool` — Bulk historical data (CSV)
+- `GetForecastTool` — Official forecast timeseries (WV)
+- `GetWaterBodiesTool` — List all water bodies
 
-### ASTChunkerTool
-Parses files and extracts structured code chunks (functions, classes, methods) with metadata for granular analysis.
+### Weather (Open-Meteo)
+- `HistoricalWeatherTool` — Historical precip, temp, snow
+- `ForecastWeatherTool` — Future weather forecasts
+- `KorneuburgWeatherTool` — Convenience: Korneuburg historical
+- `KorneuburgForecastTool` — Convenience: Korneuburg forecast
 
-### VulnerabilityScannerTool
-Core security engine that scans for:
-- Hardcoded secrets and credentials
-- Dangerous function calls
-- Weak cryptography
-- SQL injection patterns
+### Austrian Data (eHYD)
+- `ListAustrianStationsTool` — Predefined Danube station metadata
+- `StationMetadataTool` — eHYD station details
+- `StationDataTool` — Historical time-series data
+- `CharacteristicValuesTool` — MW96, warning levels, thresholds
 
-### SummaryBuilderTool
-Consolidates all findings from the `code_reviewer` and `proposal_writer` agents. It automatically combines both a high-level **Executive Summary** and a **Detailed Analysis** into a single document.
+### Data Processing
+- `ListDataFilesTool` — List files in data directory
+- `CSVSummaryTool` / `ParquetSummaryTool` — Read data summaries
+- `ResampleTool` — Resample to regular frequency
+- `FillGapsTool` — Forward-fill / interpolate gaps
+- `LagFeaturesTool` — Create lag features (t-1, t-6, t-24, t-168)
+- `RollingFeaturesTool` — Rolling mean/std windows
+- `CalendarFeaturesTool` — sin/cos hour, day-of-week, day-of-year
+- `RateOfChangeTool` — First/second derivatives
+- `ChronoSplitTool` — Chronological train/val/test split
+- `ComputeMetricsTool` — RMSE, MAE, MAPE, NSE, bias
+
+### Model Evaluation
+- `PersistenceBaselineTool` — Persistence baseline metrics per horizon
+- `WalkForwardTool` — Walk-forward validation split indices
+- `StratifiedMetricsTool` — Metrics by flow regime / season
+- `RegisterModelTool` / `ListModelsTool` — Model manifest tracking
+
+### Report Writing
+- `WriteReportTool` — Append/overwrite sections to `output/report.md`
+- `ReadReportTool` — Read current report state
+- `MarkdownTableTool` — Format data as Markdown tables
+- `ReportTOCTool` — Generate table of contents
+- `RenderMetricsTool` — Format metrics JSON as comparison tables
+- `ReadArtifactTool` — Read pipeline artifacts (CSV, Parquet, JSON, MD)
 
 ## Output
 
-The final consolidated report is written to:
-`C:\Users\Rajehdidntwakeup\IdeaProjects\crew-ai\output\output.md`
+The pipeline produces:
 
-This file includes:
-1. **Executive Summary**: High-level findings and overall assessment.
-2. **Detailed Analysis**: File-by-file breakdown of all identified issues and security vulnerabilities.
+- `output/report.md` — Complete thesis-ready Markdown report
+- `data/` — Ingested and processed datasets
+- `models/` — Trained model artifacts and manifest
 
-## Workshop Instructions
+The report includes: executive summary, data discovery, ingestion details, feature manifest, baseline results, model architecture, verification metrics (RMSE, MAE, NSE, bias per horizon per regime), integration docs, reproducibility guide, and limitations.
 
-- [Phase 1: Intro](./Instructions/Phase_1%20Intro.md)
-- [Phase 2: Build First Crew](./Instructions/Phase_2%20Build%20First%20Crew.md)
-- [Phase 3: Tool Calling](./Instructions/Phase_3%20Tool%20Calling.md)
-- [Phase 4: Web Search Integration](./Instructions/Phase_4%20CrewAI%20Web%20Serach%20Integration.md)
-- [Phase 5: MCP Integration](./Instructions/Phase_5%20MCP%20Integration.md)
+## Pipeline Phases
+
+1. **Data Discovery & Ingestion** — Query Pegelonline/eHYD/Open-Meteo, validate completeness, store in PegelHub schema
+2. **Feature Engineering & Baselines** — Lag features, upstream spatial lags, precipitation windows, calendar encoding, persistence/ARIMA/linear baselines
+3. **Model Development** — XGBoost/LightGBM + LSTM, walk-forward CV, SHAP analysis
+4. **Integration & Frontend** — REST API, dashboard/Excel, scheduled predictions
+5. **Verification & Documentation** — Stratified evaluation vs official forecasts, failure-mode analysis
+6. **Report Compilation** — Self-contained Markdown document with all findings
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.

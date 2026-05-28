@@ -12,7 +12,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
-DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", "data")
+DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", os.path.join(OUTPUT_DIR, "data"))
 
 mcp = FastMCP("report")
 

@@ -20,6 +20,11 @@ def run() -> None:
     """
     Run the crew.
     """
+    # Ensure output directories exist
+    output_dir = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
+    for subdir in ["data", "models"]:
+        os.makedirs(os.path.join(output_dir, subdir), exist_ok=True)
+
     # Load inputs from the research_area.json file
     input_file = "input/research_area.json"
     try:

@@ -12,8 +12,9 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
-DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", "data")
-MODELS_DIR = os.environ.get("PEGELHUB_MODELS_DIR", "models")
+OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
+DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", os.path.join(OUTPUT_DIR, "data"))
+MODELS_DIR = os.environ.get("PEGELHUB_MODELS_DIR", os.path.join(OUTPUT_DIR, "models"))
 
 
 # ── Persistence Baseline ───────────────────────────────────────────────────
