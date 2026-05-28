@@ -1,6 +1,6 @@
 # Water Level Forecasting Crew (ThesisCrew)
 
-AI-powered water level forecasting system built with CrewAI for the PegelHub / TEVS thesis project. A multi-agent crew discovers hydrometric data, engineers features, trains ML models, verifies against official forecasts, and compiles a thesis-ready report.
+AI-powered water level forecasting system built with CrewAI for the PegelHub thesis project. A multi-agent crew discovers hydrometric data, engineers features, trains ML models, verifies against official forecasts, and compiles a thesis-ready report.
 
 ## Overview
 

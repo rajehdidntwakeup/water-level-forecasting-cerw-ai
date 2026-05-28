@@ -25,21 +25,16 @@ DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", "data")
 
 class WriteReportInput(BaseModel):
     section: str = Field(
-        description="Report section to write (e.g. 'executive_summary', "
-                    "'data_discovery', 'ingestion', 'feature_engineering', "
-                    "'baselines', 'model_development', 'verification', "
-                    "'integration', 'reproducibility', 'limitations', 'full'). "
-                    "Use 'full' to write the entire report at once.",
+        description="Section name: executive_summary, data_discovery, ingestion, "
+                    "feature_engineering, baselines, model_development, verification, "
+                    "integration, reproducibility, limitations, or full."
     )
     content: str = Field(
-        description="Markdown content for the section. Use proper Markdown "
-                    "formatting: ## headers, | tables |, ``` code blocks ```, "
-                    "**bold** for emphasis.",
+        description="Markdown content for the section."
     )
     mode: str = Field(
         default="append",
-        description="'append' to add a section to the existing report, "
-                    "'overwrite' to replace the entire report file.",
+        description="append or overwrite."
     )
 
 
@@ -95,6 +90,10 @@ class WriteReportTool(BaseTool):
 
 # ── Read Report ─────────────────────────────────────────────────────────────
 
+class _NoInput(BaseModel):
+    pass
+
+
 class ReadReportTool(BaseTool):
     name: str = "read_report"
     description: str = (
@@ -102,6 +101,7 @@ class ReadReportTool(BaseTool):
         "Use this to review what has already been documented before appending "
         "new sections, ensuring no duplication and consistent formatting."
     )
+    args_schema: type[BaseModel] = _NoInput
 
     def _run(self) -> str:
         report_path = os.path.join(OUTPUT_DIR, "report.md")
@@ -121,8 +121,11 @@ class ReadReportTool(BaseTool):
 
 class MarkdownTableInput(BaseModel):
     headers: list[str] = Field(description="Column headers for the table.")
-    rows: list[list[str]] = Field(description="Row data. Each row is a list of strings matching the headers.")
-    title: Optional[str] = Field(default=None, description="Optional table caption above the table.")
+    rows: list[str] = Field(
+        description="Row data as JSON string. Each element is a list of strings matching the headers. "
+                    "Example: '[\"5.2\", \"3.8\", \"0.95\"]' for a single row, or pass the full list."
+    )
+    title: Optional[str] = Field(default=None, description="Optional table caption.")
 
 
 class MarkdownTableTool(BaseTool):
@@ -134,7 +137,23 @@ class MarkdownTableTool(BaseTool):
     )
     args_schema: type[BaseModel] = MarkdownTableInput
 
-    def _run(self, headers: list[str], rows: list[list[str]], title: Optional[str] = None) -> str:
+    def _run(self, headers: list[str], rows: list[str], title: Optional[str] = None) -> str:
+        # Parse rows: if first element looks like JSON list, parse it
+        parsed_rows = []
+        if rows:
+            first = rows[0]
+            if isinstance(first, str) and first.strip().startswith("["):
+                try:
+                    parsed_rows = json.loads(first.strip())
+                    if isinstance(parsed_rows, list) and parsed_rows and isinstance(parsed_rows[0], list):
+                        pass  # already list of lists
+                    elif isinstance(parsed_rows, list):
+                        parsed_rows = [parsed_rows]
+                except (json.JSONDecodeError, TypeError):
+                    parsed_rows = [[str(c) for c in rows]]
+            else:
+                parsed_rows = [[str(c) for c in rows]]
+        rows = parsed_rows
         if not headers:
             return "Error: headers cannot be empty"
         col_widths = [len(h) for h in headers]
@@ -170,6 +189,7 @@ class ReportTOCTool(BaseTool):
         "Generate a table of contents from the current report (output/report.md). "
         "Scans all ## and ### headers and produces a linked TOC in Markdown."
     )
+    args_schema: type[BaseModel] = _NoInput
 
     def _run(self) -> str:
         report_path = os.path.join(OUTPUT_DIR, "report.md")
@@ -198,15 +218,12 @@ class ReportTOCTool(BaseTool):
 
 class RenderMetricsInput(BaseModel):
     metrics_json: str = Field(
-        description="JSON string with metric results. Can be a single model "
-                    "or multiple models. Expected format: "
-                    '{"model": "xgboost", "horizons": {"+1h": {"rmse": 5.2, '
-                    '"mae": 3.8, "nse": 0.95}, ...}} or a flat dict of metrics.',
+        description="JSON string of metric results. Example: "
+                    "'{\"model\": \"xgboost\", \"horizons\": {\"+1h\": {\"rmse\": 5.2}}}'."
     )
     comparison: bool = Field(
         default=False,
-        description="If True, format as a multi-model comparison table. "
-                    "If False, format as a single-model metrics table.",
+        description="True = multi-model comparison table. False = single-model table.",
     )
 
 

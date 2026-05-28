@@ -138,10 +138,11 @@ class StratifiedMetricsInput(BaseModel):
     predicted_filepath: str = Field(description="CSV with predicted values.")
     actual_col: str = Field(default="water_level", description="Actual column.")
     predicted_col: str = Field(default="predicted", description="Predicted column.")
-    thresholds: Optional[dict[str, float]] = Field(
+    thresholds_json: Optional[str] = Field(
         default=None,
-        description="Flow regime thresholds as key-value pairs. "
-        "Keys: low, normal, elevated, warning. Values: water level in cm.",
+        description="JSON string with flow regime thresholds, e.g. "
+        "'{\"low\": 150, \"normal\": 210, \"elevated\": 280, \"warning\": 350}'. "
+        "Omit to use defaults for Korneuburg Danube.",
     )
 
 
@@ -160,12 +161,14 @@ class StratifiedMetricsTool(BaseTool):
         predicted_filepath: str,
         actual_col: str = "water_level",
         predicted_col: str = "predicted",
-        thresholds: Optional[dict[str, float]] = None,
+        thresholds_json: Optional[str] = None,
     ) -> str:
         import numpy as np
         import pandas as pd
-        if thresholds is None:
+        if thresholds_json is None:
             thresholds = {"low": 150, "normal": 210, "elevated": 280, "warning": 350}
+        else:
+            thresholds = json.loads(thresholds_json)
         a_path = os.path.join(DATA_DIR, actual_filepath) if not os.path.isabs(actual_filepath) else actual_filepath
         p_path = os.path.join(DATA_DIR, predicted_filepath) if not os.path.isabs(predicted_filepath) else predicted_filepath
         y = pd.read_csv(a_path)[actual_col].values
@@ -197,7 +200,7 @@ class StratifiedMetricsTool(BaseTool):
 
 class RegisterModelInput(BaseModel):
     model_path: str = Field(description="Path to saved model artifact.")
-    description: str = Field(default="", description="Model description (architecture, hyperparams).")
+    model_description: str = Field(default="", description="Short model description (architecture, hyperparams).")
     model_type: str = Field(default="xgboost", description="Model type: xgboost, lstm, arima, persistence.")
 
 
@@ -212,7 +215,7 @@ class RegisterModelTool(BaseTool):
     def _run(
         self,
         model_path: str,
-        description: str = "",
+        model_description: str = "",
         model_type: str = "xgboost",
     ) -> str:
         os.makedirs(MODELS_DIR, exist_ok=True)
@@ -224,7 +227,7 @@ class RegisterModelTool(BaseTool):
         entry = {
             "path": model_path,
             "model_type": model_type,
-            "description": description,
+            "description": model_description,
             "saved_at": datetime.now().isoformat(),
         }
         manifest.append(entry)
@@ -240,6 +243,7 @@ class ListModelsInput(BaseModel):
 class ListModelsTool(BaseTool):
     name: str = "list_models"
     description: str = "List all registered model artifacts from the manifest."
+    args_schema: type[BaseModel] = ListModelsInput
 
     def _run(self) -> str:
         manifest_path = os.path.join(MODELS_DIR, "model_manifest.json")

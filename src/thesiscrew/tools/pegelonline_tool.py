@@ -268,6 +268,7 @@ class GetWaterBodiesInput(BaseModel):
 class GetWaterBodiesTool(BaseTool):
     name: str = "get_water_bodies"
     description: str = "List all water bodies (rivers) available in Pegelonline."
+    args_schema: Type[BaseModel] = GetWaterBodiesInput
 
     def _run(self) -> str:
         try:

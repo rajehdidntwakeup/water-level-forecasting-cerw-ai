@@ -69,7 +69,7 @@ from thesiscrew.tools.report_writer_tool import (
 
 @CrewBase
 class Thesiscrew():
-    """Water-level forecasting crew for PegelHub / TEVS thesis project."""
+    """Water-level forecasting crew for PegelHub thesis project."""
 
     agents: list[BaseAgent]
     agents_config = "config/agents.yaml"

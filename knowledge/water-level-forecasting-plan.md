@@ -2,7 +2,7 @@
 
 **Date:** May 28, 2026  
 **Assignment:** AI-Based Water Level Forecasting  
-**Context:** PegelHub (TEVS — Technologies of Distributed Systems)  
+**Context:** PegelHub  
 **Reference Station (Example):** Korneuburg / Donau (Danube), Austria  
 
 ---
@@ -442,4 +442,4 @@ The use case allows **"a simple frontend"** or **"an Excel chart."** This plan c
 
 *End of Plan*
 
-*Prepared for PegelHub — TEVS Course Assignment*
+*Prepared for PegelHub*

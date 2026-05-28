@@ -28,6 +28,7 @@ class ListDataFilesInput(BaseModel):
 class ListDataFilesTool(BaseTool):
     name: str = "list_data_files"
     description: str = "List available data files in the data directory."
+    args_schema: type[BaseModel] = ListDataFilesInput
 
     def _run(self, subdir: str = "") -> str:
         path = os.path.join(DATA_DIR, subdir) if subdir else DATA_DIR
@@ -57,6 +58,7 @@ class CSVSummaryTool(BaseTool):
         "Read a CSV file and return a summary: shape, columns, dtypes, "
         "null counts, and first few rows."
     )
+    args_schema: type[BaseModel] = CSVSummaryInput
 
     def _run(self, filepath: str, max_rows: int = 20) -> str:
         import pandas as pd
@@ -89,6 +91,7 @@ class ParquetSummaryTool(BaseTool):
         "Read a Parquet file and return a summary: shape, columns, dtypes, "
         "null counts, and first few rows."
     )
+    args_schema: type[BaseModel] = ParquetSummaryInput
 
     def _run(self, filepath: str, max_rows: int = 20) -> str:
         import pandas as pd

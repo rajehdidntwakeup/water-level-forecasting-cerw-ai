@@ -70,6 +70,7 @@ class ListAustrianStationsTool(BaseTool):
         "Returns station names, river, coordinates, eHYD IDs, and their "
         "role in the forecasting pipeline (target vs upstream)."
     )
+    args_schema: type[BaseModel] = ListAustrianStationsInput
 
     def _run(self) -> str:
         return json.dumps(AUSTRIAN_DANUBE_STATIONS, indent=2, ensure_ascii=False)
