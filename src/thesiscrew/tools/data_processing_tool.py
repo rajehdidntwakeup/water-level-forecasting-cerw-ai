@@ -16,6 +16,33 @@ OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
 DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", os.path.join(OUTPUT_DIR, "data"))
 
 
+def _resolve_path(filepath: str) -> str:
+    """Resolve a relative path against the data directory."""
+    return os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
+
+
+def _read_csv_with_validation(filepath: str, required_cols: list[str] | None = None, parse_dates: list[str] | None = None):
+    """Read a CSV file with clear existence and column validation.
+
+    Raises FileNotFoundError or ValueError with actionable messages so
+    guardrails and callbacks can catch them.
+    """
+    import pandas as pd
+    full_path = _resolve_path(filepath)
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"File not found: {filepath} (checked {full_path})")
+    try:
+        df = pd.read_csv(full_path, parse_dates=parse_dates)
+    except Exception as e:
+        raise ValueError(f"Could not read CSV {filepath}: {e}")
+    if required_cols:
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            available = ", ".join(df.columns.tolist())
+            raise ValueError(f"Missing required columns in {filepath}: {missing}. Available: {available}")
+    return df
+
+
 # ── File Listing ───────────────────────────────────────────────────────────
 
 class ListDataFilesInput(BaseModel):
@@ -31,6 +58,9 @@ class ListDataFilesTool(BaseTool):
     args_schema: type[BaseModel] = ListDataFilesInput
 
     def _run(self, subdir: str = "") -> str:
+        # Strip redundant "data/" prefix agents sometimes add
+        if subdir.startswith("data/") or subdir.startswith("data\\"):
+            subdir = subdir[5:]
         path = os.path.join(DATA_DIR, subdir) if subdir else DATA_DIR
         if not os.path.isdir(path):
             return json.dumps({"error": f"Directory not found: {path}"})
@@ -61,12 +91,13 @@ class CSVSummaryTool(BaseTool):
     args_schema: type[BaseModel] = CSVSummaryInput
 
     def _run(self, filepath: str, max_rows: int = 20) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
         try:
-            df = pd.read_csv(full_path, nrows=max_rows + 1000)
-        except Exception as e:
+            df = _read_csv_with_validation(filepath)
+            df = df.head(max_rows + 1000)
+        except (FileNotFoundError, ValueError) as e:
             return json.dumps({"error": str(e)})
+        except Exception as e:
+            return json.dumps({"error": f"Unexpected error reading {filepath}: {e}"})
         summary = {
             "path": full_path,
             "shape": list(df.shape),
@@ -95,11 +126,13 @@ class ParquetSummaryTool(BaseTool):
 
     def _run(self, filepath: str, max_rows: int = 20) -> str:
         import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
+        full_path = _resolve_path(filepath)
+        if not os.path.exists(full_path):
+            return json.dumps({"error": f"File not found: {filepath} (checked {full_path})"})
         try:
             df = pd.read_parquet(full_path)
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": f"Could not read Parquet {filepath}: {e}"})
         summary = {
             "path": full_path,
             "shape": list(df.shape),
@@ -137,11 +170,9 @@ class ResampleTool(BaseTool):
         freq: str = "h",
         method: str = "mean",
     ) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
         try:
-            df = pd.read_csv(full_path, parse_dates=[timestamp_col])
-        except Exception as e:
+            df = _read_csv_with_validation(filepath, required_cols=[timestamp_col], parse_dates=[timestamp_col])
+        except (FileNotFoundError, ValueError) as e:
             return json.dumps({"error": str(e)})
         df = df.set_index(timestamp_col)
         if value_cols:
@@ -186,11 +217,9 @@ class FillGapsTool(BaseTool):
         max_gap_hours: float = 3.0,
         method: str = "ffill",
     ) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
         try:
-            df = pd.read_csv(full_path, parse_dates=[timestamp_col])
-        except Exception as e:
+            df = _read_csv_with_validation(filepath, required_cols=[timestamp_col], parse_dates=[timestamp_col])
+        except (FileNotFoundError, ValueError) as e:
             return json.dumps({"error": str(e)})
         nans_before = int(df.isna().sum().sum())
         if method == "ffill":
@@ -240,9 +269,10 @@ class LagFeaturesTool(BaseTool):
         column: str,
         lags: list[int] = [1, 3, 6, 12, 24, 168],
     ) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
-        df = pd.read_csv(full_path)
+        try:
+            df = _read_csv_with_validation(filepath, required_cols=[column])
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         new_cols = []
         for lag in lags:
             col_name = f"{column}_lag_{lag}"
@@ -282,9 +312,10 @@ class RollingFeaturesTool(BaseTool):
         windows: list[int] = [3, 6, 24],
         stats: list[str] = ["mean", "std"],
     ) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
-        df = pd.read_csv(full_path)
+        try:
+            df = _read_csv_with_validation(filepath, required_cols=[column])
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         new_cols = []
         for w in windows:
             for s in stats:
@@ -318,9 +349,10 @@ class CalendarFeaturesTool(BaseTool):
 
     def _run(self, filepath: str, timestamp_col: str = "timestamp") -> str:
         import numpy as np
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
-        df = pd.read_csv(full_path, parse_dates=[timestamp_col])
+        try:
+            df = _read_csv_with_validation(filepath, required_cols=[timestamp_col], parse_dates=[timestamp_col])
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         ts = df[timestamp_col].dt
         df["hour_sin"] = np.sin(2 * np.pi * ts.hour / 24)
         df["hour_cos"] = np.cos(2 * np.pi * ts.hour / 24)
@@ -364,9 +396,10 @@ class RateOfChangeTool(BaseTool):
     args_schema: type[BaseModel] = RateOfChangeInput
 
     def _run(self, filepath: str, column: str) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
-        df = pd.read_csv(full_path)
+        try:
+            df = _read_csv_with_validation(filepath, required_cols=[column])
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         df[f"{column}_roc"] = df[column].diff()
         df[f"{column}_accel"] = df[f"{column}_roc"].diff()
         out_path = full_path.replace(".csv", "_derivatives.csv")
@@ -404,9 +437,10 @@ class ChronoSplitTool(BaseTool):
         val_ratio: float = 0.15,
         test_ratio: float = 0.15,
     ) -> str:
-        import pandas as pd
-        full_path = os.path.join(DATA_DIR, filepath) if not os.path.isabs(filepath) else filepath
-        df = pd.read_csv(full_path, parse_dates=[timestamp_col])
+        try:
+            df = _read_csv_with_validation(filepath, required_cols=[timestamp_col], parse_dates=[timestamp_col])
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         df = df.sort_values(timestamp_col).reset_index(drop=True)
         n = len(df)
         n_train = int(n * train_ratio)
@@ -460,11 +494,11 @@ class ComputeMetricsTool(BaseTool):
         predicted_col: str = "predicted",
     ) -> str:
         import numpy as np
-        import pandas as pd
-        a_path = os.path.join(DATA_DIR, actual_filepath) if not os.path.isabs(actual_filepath) else actual_filepath
-        p_path = os.path.join(DATA_DIR, predicted_filepath) if not os.path.isabs(predicted_filepath) else predicted_filepath
-        y = pd.read_csv(a_path)[actual_col].values
-        yhat = pd.read_csv(p_path)[predicted_col].values
+        try:
+            y = _read_csv_with_validation(actual_filepath, required_cols=[actual_col])[actual_col].values
+            yhat = _read_csv_with_validation(predicted_filepath, required_cols=[predicted_col])[predicted_col].values
+        except (FileNotFoundError, ValueError) as e:
+            return json.dumps({"error": str(e)})
         mask = ~(np.isnan(y) | np.isnan(yhat))
         y = y[mask]
         yhat = yhat[mask]

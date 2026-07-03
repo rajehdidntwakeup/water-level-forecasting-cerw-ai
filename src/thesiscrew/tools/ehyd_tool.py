@@ -13,6 +13,8 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
+from thesiscrew.tools.cache_util import disk_cache
+
 EHYD_BASE = "https://ehyd.gv.at"
 
 SSL_CONTEXT = ssl.create_default_context()
@@ -94,6 +96,7 @@ class StationMetadataTool(BaseTool):
     )
     args_schema: type[BaseModel] = StationMetadataInput
 
+    @disk_cache(ttl_hours=168)
     def _run(self, station_key: str = "korneuburg") -> str:
         station = AUSTRIAN_DANUBE_STATIONS.get(station_key)
         if not station:
@@ -141,6 +144,7 @@ class StationDataTool(BaseTool):
     )
     args_schema: type[BaseModel] = StationDataInput
 
+    @disk_cache(ttl_hours=168)
     def _run(
         self,
         station_key: str = "korneuburg",

@@ -39,6 +39,11 @@ from thesiscrew.tools.model_evaluation_tool import (
     StratifiedMetricsTool,
     RegisterModelTool,
     ListModelsTool,
+    TrainGradientBoostingTool,
+)
+from thesiscrew.tools.dataset_tool import (
+    BuildKorneuburgDatasetTool,
+    BuildFeatureMatrixTool,
 )
 from thesiscrew.tools.read_input_tool import ReadInputTool
 from thesiscrew.tools.report_writer_tool import (
@@ -86,6 +91,10 @@ __all__ = [
     "StratifiedMetricsTool",
     "RegisterModelTool",
     "ListModelsTool",
+    "TrainGradientBoostingTool",
+    # Dataset
+    "BuildKorneuburgDatasetTool",
+    "BuildFeatureMatrixTool",
     # Input
     "ReadInputTool",
     # Report

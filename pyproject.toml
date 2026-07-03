@@ -12,8 +12,11 @@ dependencies = [
     "fastapi-sso>=0.4.0",
     "langchain-openai>=0.3.23",
     "litellm>=1.75.3",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
     "pydantic[email]>=2.11.10",
     "python-dotenv>=1.1.1",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.scripts]

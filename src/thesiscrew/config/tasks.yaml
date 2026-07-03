@@ -19,8 +19,11 @@ station_discovery_task:
        available parameters, temporal granularity, date range, and known gaps.
     5. Produce a data-availability matrix summarizing which parameters exist
        at which station, with completeness estimates (% non-null per year).
+
+    Write your final result as a well-structured Markdown report to the file
+    output/phase1_station_discovery.md. This file will be read by the next agent.
   expected_output: >
-    A structured data-availability report containing:
+    A structured Markdown file at output/phase1_station_discovery.md containing:
     - API endpoint documentation for Pegelonline, eHYD/DORIS, and Open-Meteo
     - Station metadata table (UUID, name, water body, coordinates, available timeseries)
     - Forecast availability confirmation (WV yes/no per station)
@@ -33,6 +36,10 @@ data_ingestion_task:
     Build and execute ETL pipelines to ingest raw data from all validated sources
     into the PegelHub database schema (stations, measurements, official_forecasts,
     weather_data tables).
+
+    BEFORE you start, read the previous agent's Markdown result from
+    output/phase1_station_discovery.md using the read_artifact tool so you know
+    which stations, parameters, and data gaps were identified.
 
     1. Implement fetchers for Pegelonline (stations, measurements CSV/JSON,
        forecast timeseries WV), eHYD (historical water levels, discharge), and
@@ -47,7 +54,11 @@ data_ingestion_task:
        idempotent.
     5. Verify at least 2 years of hourly water-level data at the primary station;
        flag any extended gaps to the team.
+
+    Write your final result as a well-structured Markdown report to
+    output/phase1_data_ingestion.md.
   expected_output: >
+    A Markdown file at output/phase1_data_ingestion.md containing:
     - Populated PegelHub tables: stations, measurements, official_forecasts,
       weather_data
     - Ingestion scripts (idempotent, rerunnable)
@@ -64,6 +75,11 @@ feature_engineering_task:
   description: >
     Transform raw ingested data into a model-ready feature set covering all
     feature categories from the forecasting plan.
+
+    BEFORE you start, read the previous phase outputs:
+    - output/phase1_station_discovery.md for station metadata and data gaps
+    - output/phase1_data_ingestion.md for the actual ingested tables, row counts,
+      gap handling decisions, and the chronological train/val/test split dates
 
     Endogenous (lagged) features:
     - water_level at t-1, t-3, t-6, t-12, t-24, t-168 (hours)
@@ -100,7 +116,11 @@ feature_engineering_task:
     Output a single feature matrix CSV/Parquet aligned on hourly timestamps,
     with a clear column manifest documenting every feature name, source, and
     transformation applied.
+
+    Write your final result as a Markdown report to
+    output/phase2_feature_engineering.md.
   expected_output: >
+    A Markdown file at output/phase2_feature_engineering.md containing:
     - Feature matrix (Parquet or CSV) with all engineered features on hourly grid
     - Feature manifest: each column → source, transformation, category
     - Lag estimation result: cross-correlation peak for upstream travel time
@@ -111,6 +131,9 @@ baseline_modeling_task:
   description: >
     Implement and evaluate Tier 1 baseline models to establish skill anchors
     before building AI models.
+
+    BEFORE you start, read output/phase2_feature_engineering.md to understand the
+    feature set, manifest, and train/val/test splits produced by the feature engineer.
 
     1. Persistence model: predict water_level at t+h = water_level at t.
        Compute RMSE, MAE, NSE for horizons +1h, +6h, +12h, +24h, +48h.
@@ -124,7 +147,11 @@ baseline_modeling_task:
 
     Store all predictions and metrics in a standardized results dict so
     downstream models can be compared against these baselines.
+
+    Write your final result as a Markdown report to
+    output/phase2_baseline_modeling.md.
   expected_output: >
+    A Markdown file at output/phase2_baseline_modeling.md containing:
     - Baseline predictions CSV for each model × horizon
     - Metrics table: RMSE, MAE, MAPE, NSE, bias per baseline per horizon
     - Official forecast metrics (if WV available) as the reference benchmark
@@ -139,6 +166,11 @@ model_training_task:
   description: >
     Train and optimize Tier 2 forecasting models using the engineered feature
     set. Work across all horizons: +1h, +6h, +12h, +24h, +48h, +72h, +168h.
+
+    BEFORE you start, read the previous phase outputs:
+    - output/phase2_feature_engineering.md for the feature matrix and manifest
+    - output/phase2_baseline_modeling.md for baseline metrics that your models
+      must beat
 
     XGBoost / LightGBM:
     - Train on the tabular feature set (lag features, upstream, weather, calendar,
@@ -162,7 +194,11 @@ model_training_task:
 
     For every model × horizon, log: predictions on test set, all metrics,
     training time, and feature importance.
+
+    Write your final result as a Markdown report to
+    output/phase3_model_training.md.
   expected_output: >
+    A Markdown file at output/phase3_model_training.md containing:
     - Trained model artifacts (serialized XGBoost, LSTM weights)
     - Test-set predictions CSV per model × horizon
     - Metrics table: RMSE, MAE, MAPE, NSE, bias per model per horizon
@@ -180,6 +216,12 @@ api_integration_task:
     Package trained models into a deployable forecasting service integrated
     with PegelHub.
 
+    BEFORE you start, read the previous phase outputs:
+    - output/phase3_model_training.md for the best model artifacts, metrics,
+      and prediction files
+    - output/phase2_feature_engineering.md for the feature engineering pipeline
+      that must be rerun during scheduled inference
+
     1. Store all model predictions in the PegelHub model_predictions table
        with columns: station_id, run_timestamp, model_version, horizon_h,
        predicted_value, actual_value, error_metrics.
@@ -192,7 +234,11 @@ api_integration_task:
        - Re-runs feature engineering on the new data window
        - Produces updated predictions and stores them
     4. Add health-check endpoint and basic error handling.
+
+    Write your final result as a Markdown report to
+    output/phase4_api_integration.md.
   expected_output: >
+    A Markdown file at output/phase4_api_integration.md containing:
     - REST API with forecast endpoint (documented with OpenAPI/Swagger)
     - Scheduler script for automated data refresh and prediction updates
     - Model_predictions table populated with sample predictions
@@ -202,6 +248,9 @@ api_integration_task:
 frontend_task:
   description: >
     Build a lightweight visualization layer for forecast results.
+
+    BEFORE you start, read output/phase4_api_integration.md to understand the
+    API contract and available endpoints that the frontend must consume.
 
     Option A (Web Dashboard — preferred if time allows):
     - Time-series chart showing: measured water level (solid), AI forecast
@@ -220,7 +269,10 @@ frontend_task:
     - Summary table: RMSE, MAE, NSE per horizon for selected period.
 
     Use the REST API from api_integration_task as data source.
+
+    Write your final result as a Markdown report to output/phase4_frontend.md.
   expected_output: >
+    A Markdown file at output/phase4_frontend.md containing:
     - Working web dashboard (HTML+JS) or Excel report template
     - Screenshot or sample output demonstrating measured vs AI vs official
       forecast visualization
@@ -237,6 +289,12 @@ verification_task:
     baselines. This is the critical evaluation step required by the use case:
     "Explore available data that also includes original forecast data, so that
     appropriate verification can be carried out."
+
+    BEFORE you start, read the previous phase outputs:
+    - output/phase3_model_training.md for model predictions and metrics
+    - output/phase2_baseline_modeling.md for baseline metrics
+    - output/phase1_data_ingestion.md to confirm official forecast (WV) data
+      availability and any data-quality caveats
 
     1. Walk-forward validation: slide a training window forward in time,
        evaluate on each subsequent test block. Report average and spread of
@@ -257,7 +315,11 @@ verification_task:
        Rapid rises? Snowmelt events?
     6. Document: can the AI model beat the official forecast in any regime
        or horizon? If so, where exactly?
+
+    Write your final result as a Markdown report to
+    output/phase5_verification.md.
   expected_output: >
+    A Markdown file at output/phase5_verification.md containing:
     - Walk-forward validation results (metrics per fold)
     - Stratified metrics tables (by flow regime, season, upstream condition)
     - Comparative time-series charts (AI vs official vs measured)
@@ -270,6 +332,17 @@ verification_task:
 final_documentation_task:
   description: >
     Compile the complete thesis project documentation covering all phases.
+
+    BEFORE you start, read the previous phase Markdown outputs so the
+    documentation is factually complete and self-contained:
+    - output/phase1_station_discovery.md
+    - output/phase1_data_ingestion.md
+    - output/phase2_feature_engineering.md
+    - output/phase2_baseline_modeling.md
+    - output/phase3_model_training.md
+    - output/phase4_api_integration.md
+    - output/phase4_frontend.md
+    - output/phase5_verification.md
 
     1. Data sources: APIs used, stations selected, parameters retrieved,
        data completeness, gaps, and preprocessing decisions.
@@ -284,7 +357,10 @@ final_documentation_task:
        random seeds, step-by-step run instructions.
     7. Limitations and future work: data gaps, model ceilings, potential
        improvements (TFT, physics-informed approaches, longer history).
+
+    Write the final documentation to output/phase5_final_documentation.md.
   expected_output: >
+    A Markdown file at output/phase5_final_documentation.md containing:
     - README.md with project overview, setup, and run instructions
     - Full methodology documentation (data → features → models → evaluation)
     - Reproducibility guide: dependencies, configuration, random seeds
@@ -297,9 +373,28 @@ final_documentation_task:
 
 report_writing_task:
   description: >
-    Compile a comprehensive, thesis-ready Markdown report at output/report.md
-    that documents the entire water-level forecasting workflow from data discovery
-    through verification. This report must be self-contained and include:
+    Compile a comprehensive, thesis-ready Markdown report split across two files:
+    - output/data/data_output.md for data-related sections (executive summary,
+      data discovery, ingestion, feature engineering)
+    - output/models/models_output.md for model-related sections (baselines,
+      model development, verification, integration, reproducibility, limitations)
+
+    BEFORE you start, read the phase Markdown files produced by the upstream
+    agents using the read_artifact tool:
+    - output/phase1_station_discovery.md
+    - output/phase1_data_ingestion.md
+    - output/phase2_feature_engineering.md
+    - output/phase2_baseline_modeling.md
+    - output/phase3_model_training.md
+    - output/phase4_api_integration.md
+    - output/phase4_frontend.md
+    - output/phase5_verification.md
+    - output/phase5_final_documentation.md
+
+    Use the write_report tool with target='data' or target='models' to route
+    sections to the correct file, or let the tool auto-route by section name.
+
+    The reports must be self-contained and include:
 
     1. **Executive Summary** — one-paragraph overview of the project goal, target
        station (Korneuburg / Danube), and final results (best model, best horizon,
@@ -356,10 +451,17 @@ report_writing_task:
     Use proper Markdown: ## headers, ### sub-headers, | tables |, ``` code
     blocks, and **bold** for emphasis. Write in academic English suitable for a
     thesis appendix.
+
+    Also write a combined final report to output/phase5_report.md.
   expected_output: >
-    A single, well-structured Markdown file at output/report.md containing all
-    sections listed above. The file must be self-contained — every metric,
-    every feature, every decision must be documented. If any section has no
-    data (e.g., no official forecast available), state that explicitly rather
-    than leaving it blank. Include all metric tables in Markdown table format.
+    Two well-structured Markdown files:
+    - output/data/data_output.md: executive summary, data discovery,
+      ingestion, and feature engineering sections.
+    - output/models/models_output.md: baselines, model development,
+      verification, integration, reproducibility, and limitations sections.
+    Each file must be self-contained — every metric, feature, and decision
+    must be documented. If any section has no data, state that explicitly
+    rather than leaving it blank. Include all metric tables in Markdown
+    table format. Also create output/phase5_report.md as a single combined
+    report for easy review.
   agent: report_writer

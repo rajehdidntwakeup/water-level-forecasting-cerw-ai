@@ -13,6 +13,8 @@ from typing import Type, Optional
 from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
+from thesiscrew.tools.cache_util import disk_cache
+
 
 PEGELONLINE_BASE = "https://www.pegelonline.wsv.de/webservices/rest-api/v2"
 
@@ -160,6 +162,7 @@ class GetMeasurementsTool(BaseTool):
     )
     args_schema: Type[BaseModel] = GetMeasurementsInput
 
+    @disk_cache(ttl_hours=168)
     def _run(
         self,
         uuid: str,
@@ -209,6 +212,7 @@ class GetMeasurementsCSVTool(BaseTool):
     )
     args_schema: Type[BaseModel] = GetMeasurementsCSVInput
 
+    @disk_cache(ttl_hours=168)
     def _run(
         self,
         uuid: str,
@@ -249,6 +253,7 @@ class GetForecastTool(BaseTool):
     )
     args_schema: Type[BaseModel] = GetForecastInput
 
+    @disk_cache(ttl_hours=6)
     def _run(self, uuid: str, timeseries: str = "WV") -> str:
         try:
             data = _pegel_get(

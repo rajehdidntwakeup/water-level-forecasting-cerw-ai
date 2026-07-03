@@ -8,12 +8,6 @@ import os
 import litellm
 import urllib3
 
-from dotenv import load_dotenv
-load_dotenv()
-
-# --- SSL (Daystrom selbstsigniert) ---
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-litellm.ssl_verify = False
 
 # --- Tools ---
 from thesiscrew.tools.pegelonline_tool import (
@@ -21,8 +15,6 @@ from thesiscrew.tools.pegelonline_tool import (
     StationDetailTool,
     GetMeasurementsTool,
     GetMeasurementsCSVTool,
-    GetForecastTool,
-    GetWaterBodiesTool,
 )
 from thesiscrew.tools.open_meteo_tool import (
     HistoricalWeatherTool,
@@ -39,7 +31,6 @@ from thesiscrew.tools.ehyd_tool import (
 from thesiscrew.tools.data_processing_tool import (
     ListDataFilesTool,
     CSVSummaryTool,
-    ParquetSummaryTool,
     ResampleTool,
     FillGapsTool,
     LagFeaturesTool,
@@ -55,44 +46,78 @@ from thesiscrew.tools.model_evaluation_tool import (
     StratifiedMetricsTool,
     RegisterModelTool,
     ListModelsTool,
+    TrainGradientBoostingTool,
 )
 from thesiscrew.tools.read_input_tool import ReadInputTool
+from thesiscrew.tools.dataset_tool import (
+    BuildKorneuburgDatasetTool,
+    BuildFeatureMatrixTool,
+)
+from thesiscrew.tools.artifact_tool import ReadArtifactTool
 from thesiscrew.tools.report_writer_tool import (
     WriteReportTool,
     ReadReportTool,
     MarkdownTableTool,
     ReportTOCTool,
     RenderMetricsTool,
-    ReadArtifactTool,
+)
+
+import litellm
+import urllib3
+# SSL warning suppression for local/self-signed endpoints
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+litellm.ssl_verify = False
+litellm.request_timeout = int(os.environ.get("LITELLM_REQUEST_TIMEOUT", "300"))
+
+from thesiscrew.shared import (
+    CrewCallbacks,
+    DEFAULT_LLM,
+    FeatureManifest,
+    BaselineMetrics,
+    VerificationReport,
+    agent_llm,
+    supports_structured_outputs,
+    validate_discovery_output,
+    validate_feature_output,
+    validate_baseline_output,
+    validate_verification_output,
+    validate_report_output,
+    OUTPUT_DIR,
 )
 
 
 @CrewBase
-class Thesiscrew():
-    """Water-level forecasting crew for PegelHub thesis project."""
+class Thesiscrew(CrewCallbacks):
+    """Full training pipeline crew for water-level forecasting."""
 
     agents: list[BaseAgent]
     agents_config = "config/agents.yaml"
     tasks: list[Task]
     tasks_config = "config/tasks.yaml"
 
-    # --- Phase 1: Data Discovery & Ingestion ---
+    # -----------------------------------------------------------------------
+    # Agents
+    # -----------------------------------------------------------------------
 
     @agent
     def data_researcher(self) -> Agent:
         return Agent(
             config=self.agents_config['data_researcher'],
+            llm=agent_llm("data_researcher"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/data_researcher.md',
+            max_retry_limit=2,
+            max_iter=10,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
             tools=[
                 ListStationsTool(),
                 StationDetailTool(),
-                GetForecastTool(),
-                GetWaterBodiesTool(),
                 ListAustrianStationsTool(),
                 StationMetadataTool(),
-                StationDataTool(),
                 CharacteristicValuesTool(),
                 HistoricalWeatherTool(),
                 ForecastWeatherTool(),
@@ -106,10 +131,18 @@ class Thesiscrew():
     def data_engineer(self) -> Agent:
         return Agent(
             config=self.agents_config['data_engineer'],
+            llm=agent_llm("data_engineer"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/data_engineer.md',
+            max_retry_limit=2,
+            max_iter=12,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
             tools=[
+                BuildKorneuburgDatasetTool(),
                 GetMeasurementsTool(),
                 GetMeasurementsCSVTool(),
                 StationDataTool(),
@@ -117,33 +150,39 @@ class Thesiscrew():
                 KorneuburgForecastTool(),
                 ListDataFilesTool(),
                 CSVSummaryTool(),
-                ParquetSummaryTool(),
                 ResampleTool(),
                 FillGapsTool(),
-                ReadInputTool(),
+                ReadArtifactTool(),
             ],
         )
-
-    # --- Phase 2: Feature Engineering & Baselines ---
 
     @agent
     def feature_engineer(self) -> Agent:
         return Agent(
             config=self.agents_config['feature_engineer'],
+            llm=agent_llm("feature_engineer"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/feature_engineer.md',
+            max_retry_limit=2,
+            max_iter=15,
+            max_execution_time=900,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
+            reasoning=True,
+            max_reasoning_attempts=2,
             tools=[
+                BuildKorneuburgDatasetTool(),
+                BuildFeatureMatrixTool(),
                 LagFeaturesTool(),
                 RollingFeaturesTool(),
                 CalendarFeaturesTool(),
                 RateOfChangeTool(),
                 ChronoSplitTool(),
                 CSVSummaryTool(),
-                ParquetSummaryTool(),
                 ListDataFilesTool(),
-                KorneuburgWeatherTool(),
-                ReadInputTool(),
+                ReadArtifactTool(),
             ],
         )
 
@@ -151,57 +190,77 @@ class Thesiscrew():
     def model_developer(self) -> Agent:
         return Agent(
             config=self.agents_config['model_developer'],
+            llm=agent_llm("model_developer"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/model_developer.md',
+            max_retry_limit=2,
+            max_iter=20,
+            max_execution_time=1200,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
+            reasoning=True,
+            max_reasoning_attempts=2,
             tools=[
+                TrainGradientBoostingTool(),
                 PersistenceBaselineTool(),
                 WalkForwardTool(),
+                StratifiedMetricsTool(),
                 RegisterModelTool(),
                 ListModelsTool(),
                 CSVSummaryTool(),
-                ParquetSummaryTool(),
                 ListDataFilesTool(),
-                ReadInputTool(),
+                ReadArtifactTool(),
             ],
         )
-
-    # --- Phase 4: Integration & Frontend ---
 
     @agent
     def integration_specialist(self) -> Agent:
         return Agent(
             config=self.agents_config['integration_specialist'],
+            llm=agent_llm("integration_specialist"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/integration_specialist.md',
+            max_retry_limit=2,
+            max_iter=10,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
             tools=[
                 ListDataFilesTool(),
-                CSVSummaryTool(),
                 ListModelsTool(),
-                RegisterModelTool(),
-                ReadInputTool(),
+                CSVSummaryTool(),
+                ReadArtifactTool(),
             ],
         )
-
-    # --- Phase 5: Verification & Documentation ---
 
     @agent
     def verification_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['verification_analyst'],
+            llm=agent_llm("verification_analyst"),
             verbose=True,
             allow_delegation=False,
-            max_retry_limit=5,
+            output_file='output/verification_analyst.md',
+            max_retry_limit=2,
+            max_iter=12,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
+            reasoning=True,
+            max_reasoning_attempts=2,
             tools=[
                 ComputeMetricsTool(),
                 StratifiedMetricsTool(),
                 WalkForwardTool(),
                 PersistenceBaselineTool(),
                 CSVSummaryTool(),
-                ParquetSummaryTool(),
                 ListDataFilesTool(),
-                ReadInputTool(),
+                ReadArtifactTool(),
             ],
         )
 
@@ -209,9 +268,16 @@ class Thesiscrew():
     def report_writer(self) -> Agent:
         return Agent(
             config=self.agents_config['report_writer'],
+            llm=agent_llm("report_writer"),
             verbose=True,
+            output_file='output/data_output.md',
             allow_delegation=False,
-            max_retry_limit=5,
+            max_retry_limit=2,
+            max_iter=12,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
             tools=[
                 ReadReportTool(),
                 WriteReportTool(),
@@ -219,92 +285,171 @@ class Thesiscrew():
                 ReportTOCTool(),
                 RenderMetricsTool(),
                 ReadArtifactTool(),
-                ReadInputTool(),
-                ListDataFilesTool(),
-                CSVSummaryTool(),
-                ParquetSummaryTool(),
-                ListModelsTool(),
             ],
         )
 
-    # --- Tasks (Phase 1) ---
+    # -----------------------------------------------------------------------
+    # Tasks
+    # -----------------------------------------------------------------------
 
     @task
     def station_discovery_task(self) -> Task:
         return Task(
             config=self.tasks_config['station_discovery_task'],
+            output_file='output/phase1_station_discovery.md',
+            create_directory=True,
+            guardrail=validate_discovery_output,
+            guardrail_max_retries=2,
         )
 
     @task
     def data_ingestion_task(self) -> Task:
         return Task(
             config=self.tasks_config['data_ingestion_task'],
+            output_file='output/phase1_data_ingestion.md',
+            create_directory=True,
         )
-
-    # --- Tasks (Phase 2) ---
 
     @task
     def feature_engineering_task(self) -> Task:
+        # Local/cloud Ollama models do not reliably emit Pydantic JSON, so fall
+        # back to Markdown outputs and guardrails for those providers.
+        if supports_structured_outputs():
+            return Task(
+                config=self.tasks_config['feature_engineering_task'],
+                output_file='output/data/feature_manifest.json',
+                create_directory=True,
+                output_pydantic=FeatureManifest,
+                guardrail=validate_feature_output,
+                guardrail_max_retries=2,
+                callback=self._render_feature_manifest,
+            )
         return Task(
             config=self.tasks_config['feature_engineering_task'],
+            output_file='output/phase2_feature_engineering.md',
+            create_directory=True,
+            guardrail=validate_feature_output,
+            guardrail_max_retries=2,
         )
 
     @task
     def baseline_modeling_task(self) -> Task:
+        if supports_structured_outputs():
+            return Task(
+                config=self.tasks_config['baseline_modeling_task'],
+                output_file='output/models/baseline_metrics.json',
+                create_directory=True,
+                output_pydantic=BaselineMetrics,
+                guardrail=validate_baseline_output,
+                guardrail_max_retries=2,
+                callback=self._render_baseline_metrics,
+            )
         return Task(
             config=self.tasks_config['baseline_modeling_task'],
+            output_file='output/phase2_baseline_modeling.md',
+            create_directory=True,
+            guardrail=validate_baseline_output,
+            guardrail_max_retries=2,
         )
-
-    # --- Tasks (Phase 3) ---
 
     @task
     def model_training_task(self) -> Task:
         return Task(
             config=self.tasks_config['model_training_task'],
+            output_file='output/phase3_model_training.md',
+            create_directory=True,
         )
-
-    # --- Tasks (Phase 4) ---
 
     @task
     def api_integration_task(self) -> Task:
         return Task(
             config=self.tasks_config['api_integration_task'],
+            output_file='output/phase4_api_integration.md',
+            create_directory=True,
+            async_execution=True,
         )
 
     @task
     def frontend_task(self) -> Task:
         return Task(
             config=self.tasks_config['frontend_task'],
+            output_file='output/phase4_frontend.md',
+            create_directory=True,
+            async_execution=True,
         )
-
-    # --- Tasks (Phase 5) ---
 
     @task
     def verification_task(self) -> Task:
+        if supports_structured_outputs():
+            return Task(
+                config=self.tasks_config['verification_task'],
+                output_file='output/models/verification_report.json',
+                create_directory=True,
+                output_pydantic=VerificationReport,
+                guardrail=validate_verification_output,
+                guardrail_max_retries=2,
+                callback=self._render_verification_report,
+            )
         return Task(
             config=self.tasks_config['verification_task'],
+            output_file='output/phase5_verification.md',
+            create_directory=True,
+            guardrail=validate_verification_output,
+            guardrail_max_retries=2,
         )
 
     @task
     def final_documentation_task(self) -> Task:
         return Task(
             config=self.tasks_config['final_documentation_task'],
+            output_file='output/phase5_final_documentation.md',
+            create_directory=True,
         )
 
     @task
     def report_writing_task(self) -> Task:
         return Task(
             config=self.tasks_config['report_writing_task'],
+            output_file='output/phase5_report.md',
+            create_directory=True,
+            guardrail=validate_report_output,
+            guardrail_max_retries=2,
+            context=[
+                self.station_discovery_task(),
+                self.data_ingestion_task(),
+                self.feature_engineering_task(),
+                self.baseline_modeling_task(),
+                self.model_training_task(),
+                self.verification_task(),
+                self.final_documentation_task(),
+            ],
         )
 
-    # --- Crew ---
+    # -----------------------------------------------------------------------
+    # Crew
+    # -----------------------------------------------------------------------
 
     @crew
     def crew(self) -> Crew:
-        """Creates the water-level forecasting crew."""
+        """Creates the optimized water-level forecasting crew."""
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        use_memory = bool(openai_key) and openai_key.lower() != "na"
+        if not use_memory:
+            print("WARNING: OPENAI_API_KEY not set or is 'NA'; disabling crew memory. "
+                  "Set a valid key to enable cross-agent memory and context reuse.")
+
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
             process=Process.sequential,
             verbose=True,
+            memory=use_memory,
+            cache=True,
+            embedder={"provider": "openai"} if use_memory else None,
+            max_rpm=100,
+            output_log_file="output/crew_run.json",
+            step_callback=self._on_step,
+            task_callback=self._on_task_complete,
+            before_kickoff_callbacks=[self._validate_inputs],
+            after_kickoff_callbacks=[self._log_results, self._write_artifact_manifest],
         )

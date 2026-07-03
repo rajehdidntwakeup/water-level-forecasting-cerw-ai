@@ -2,6 +2,9 @@
 
 Provides tools for writing, reading, and formatting the workflow report,
 plus reading pipeline artifacts (CSV, Parquet, JSON, Markdown).
+Reports are split across two files:
+  - output/data/data_output.md    (data discovery, ingestion, feature engineering)
+  - output/models/models_output.md (baselines, model development, verification)
 """
 
 import json
@@ -13,6 +16,28 @@ from mcp.server.fastmcp import FastMCP
 
 OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
 DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", os.path.join(OUTPUT_DIR, "data"))
+
+DATA_SECTIONS = {"executive_summary", "data_discovery", "ingestion", "feature_engineering"}
+MODELS_SECTIONS = {"baselines", "model_development", "verification", "integration",
+                   "reproducibility", "limitations"}
+
+REPORT_FILES = {
+    "data": os.path.join(OUTPUT_DIR, "data", "data_output.md"),
+    "models": os.path.join(OUTPUT_DIR, "models", "models_output.md"),
+}
+
+
+def _resolve_target(section: str, target: Optional[str] = None) -> str:
+    if target in REPORT_FILES:
+        return target
+    if section in DATA_SECTIONS:
+        return "data"
+    if section in MODELS_SECTIONS:
+        return "models"
+    if section == "full":
+        return "models"
+    return "data"
+
 
 mcp = FastMCP("report")
 
@@ -41,21 +66,33 @@ def _md_table(headers: list[str], rows: list[list[str]], title: Optional[str] = 
 # ── Write Report Section ────────────────────────────────────────────────────
 
 @mcp.tool()
-def write_report_section(section: str, content: str, mode: str = "append") -> str:
-    """Write or append a Markdown section to the workflow report (output/report.md).
+def write_report_section(section: str, content: str, mode: str = "append", target: str = "auto") -> str:
+    """Write or append a Markdown section to the workflow report.
+
+    Data sections (executive_summary, data_discovery, ingestion,
+    feature_engineering) go to output/data/data_output.md.
+    Model sections (baselines, model_development, verification,
+    integration, reproducibility, limitations) go to
+    output/models/models_output.md.
+    Use target='data' or 'models' to override; 'auto' routes by section name.
 
     Args:
         section: Section name (e.g. 'executive_summary', 'data_discovery',
                  'verification', 'full' to write entire report).
         content: Markdown content for the section.
         mode: 'append' to add section, 'overwrite' to replace entire file.
+        target: 'data', 'models', or 'auto' to route by section name.
     """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    report_path = os.path.join(OUTPUT_DIR, "report.md")
+    resolved = _resolve_target(section, target if target != "auto" else None)
+    report_path = REPORT_FILES[resolved]
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    label = "Data" if resolved == "data" else "Models"
+    title = f"# Water Level Forecasting — {label} Report\n\n"
 
     if mode == "overwrite" or section == "full":
         header = (
-            f"# Water Level Forecasting Report\n\n"
+            title
             f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
             f"**Station:** Korneuburg / Donau (Danube), Austria\n\n"
             f"---\n\n"
@@ -74,7 +111,7 @@ def write_report_section(section: str, content: str, mode: str = "append") -> st
     with open(report_path, "w", encoding="utf-8") as f:
         if not existing:
             f.write(
-                f"# Water Level Forecasting Report\n\n"
+                title
                 f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                 f"**Station:** Korneuburg / Donau (Danube), Austria\n\n"
                 f"---\n\n"
@@ -91,13 +128,16 @@ def write_report_section(section: str, content: str, mode: str = "append") -> st
 # ── Read Report ──────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def read_report() -> str:
-    """Read the current workflow report (output/report.md).
+def read_report(target: str = "data") -> str:
+    """Read the current workflow report file.
+    target='data' reads output/data/data_output.md,
+    target='models' reads output/models/models_output.md.
     Returns the full content, or a truncated preview if very long.
     """
-    report_path = os.path.join(OUTPUT_DIR, "report.md")
+    resolved = target if target in REPORT_FILES else "data"
+    report_path = REPORT_FILES[resolved]
     if not os.path.exists(report_path):
-        return "Report file does not exist yet. Use write_report_section to create it."
+        return f"Report file {report_path} does not exist yet. Use write_report_section to create it."
     with open(report_path, "r", encoding="utf-8") as f:
         content = f.read()
     if len(content) > 8000:
@@ -108,13 +148,16 @@ def read_report() -> str:
 # ── Generate TOC ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def generate_toc() -> str:
-    """Generate a table of contents from the current report (output/report.md).
+def generate_toc(target: str = "data") -> str:
+    """Generate a table of contents from a report file.
+    target='data' scans output/data/data_output.md,
+    target='models' scans output/models/models_output.md.
     Scans ## and ### headers and produces a linked Markdown TOC.
     """
-    report_path = os.path.join(OUTPUT_DIR, "report.md")
+    resolved = target if target in REPORT_FILES else "data"
+    report_path = REPORT_FILES[resolved]
     if not os.path.exists(report_path):
-        return "Report file does not exist yet."
+        return f"Report file {report_path} does not exist yet."
     with open(report_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 

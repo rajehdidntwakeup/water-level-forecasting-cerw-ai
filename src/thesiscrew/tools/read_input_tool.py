@@ -13,7 +13,7 @@ from crewai.tools import BaseTool
 
 PROJECT_ROOT = os.environ.get(
     "PEGELHUB_PROJECT_ROOT",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")),
 )
 
 

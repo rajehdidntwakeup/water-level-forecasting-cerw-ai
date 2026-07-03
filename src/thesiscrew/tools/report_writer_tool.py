@@ -1,12 +1,13 @@
 """CrewAI tools for the report_writer agent.
 
 Provides:
-- WriteReportTool: append/overwrite sections to output/report.md
-- ReadReportTool: read current report state
+- WriteReportTool: append/overwrite sections to output/data/data_output.md
+  or output/models/models_output.md
+- ReadReportTool: read current report state from either output file
 - MarkdownTableTool: format structured data as Markdown tables
-- ReportTOCTool: generate a table of contents from the report
+- ReportTOCTool: generate a table of contents from either report file
 - RenderMetricsTool: format metric dicts as Markdown comparison tables
-- ReadArtifactTool: read any pipeline artifact (CSV, Parquet, JSON, MD)
+- ReadArtifactTool is imported from thesiscrew.tools.artifact_tool for reuse.
 """
 
 import json
@@ -17,8 +18,33 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
+from thesiscrew.tools.artifact_tool import ReadArtifactTool, ReadArtifactInput
+
 OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
 DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", "data")
+
+# Section → target file mapping
+DATA_SECTIONS = {"executive_summary", "data_discovery", "ingestion", "feature_engineering"}
+MODELS_SECTIONS = {"baselines", "model_development", "verification", "integration",
+                   "reproducibility", "limitations"}
+
+REPORT_FILES = {
+    "data": os.path.join(OUTPUT_DIR, "data", "data_output.md"),
+    "models": os.path.join(OUTPUT_DIR, "models", "models_output.md"),
+}
+
+
+def _resolve_target(section: str, target: Optional[str] = None) -> str:
+    """Return 'data' or 'models' based on section name or explicit target."""
+    if target in REPORT_FILES:
+        return target
+    if section in DATA_SECTIONS:
+        return "data"
+    if section in MODELS_SECTIONS:
+        return "models"
+    if section == "full":
+        return "models"
+    return "data"
 
 
 # ── Write Report ───────────────────────────────────────────────────────────
@@ -36,27 +62,39 @@ class WriteReportInput(BaseModel):
         default="append",
         description="append or overwrite."
     )
+    target: str = Field(
+        default="auto",
+        description="Which file to write to: 'data' for output/data/data_output.md, "
+                    "'models' for output/models/models_output.md, or 'auto' to route "
+                    "based on section name."
+    )
 
 
 class WriteReportTool(BaseTool):
     name: str = "write_report"
     description: str = (
-        "Write or append Markdown content to the workflow report file "
-        "(output/report.md). Use this to document each phase's findings, "
-        "metric tables, feature manifests, and conclusions as the pipeline "
-        "progresses. Sections are appended in order; use 'full' to write "
-        "the complete report at once."
+        "Write or append Markdown content to the workflow report files. "
+        "Data sections (executive_summary, data_discovery, ingestion, "
+        "feature_engineering) go to output/data/data_output.md. "
+        "Model sections (baselines, model_development, verification, "
+        "integration, reproducibility, limitations) go to "
+        "output/models/models_output.md. Use target='data' or "
+        "target='models' to override; 'auto' routes by section name."
     )
     args_schema: type[BaseModel] = WriteReportInput
 
-    def _run(self, section: str, content: str, mode: str = "append") -> str:
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        report_path = os.path.join(OUTPUT_DIR, "report.md")
+    def _run(self, section: str, content: str, mode: str = "append", target: str = "auto") -> str:
+        resolved = _resolve_target(section, target if target != "auto" else None)
+        report_path = REPORT_FILES[resolved]
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+        label = "Data" if resolved == "data" else "Models"
+        title = f"# Water Level Forecasting — {label} Report\n\n"
 
         if mode == "overwrite" or section == "full":
             header = (
-                f"# Water Level Forecasting Report\n\n"
-                f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                title
+                + f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                 f"**Station:** Korneuburg / Donau (Danube), Austria\n\n"
                 f"---\n\n"
             )
@@ -74,8 +112,8 @@ class WriteReportTool(BaseTool):
         with open(report_path, "w", encoding="utf-8") as f:
             if not existing:
                 f.write(
-                    f"# Water Level Forecasting Report\n\n"
-                    f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    title
+                    + f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                     f"**Station:** Korneuburg / Donau (Danube), Austria\n\n"
                     f"---\n\n"
                 )
@@ -90,23 +128,30 @@ class WriteReportTool(BaseTool):
 
 # ── Read Report ─────────────────────────────────────────────────────────────
 
-class _NoInput(BaseModel):
-    pass
+
+class ReadReportInput(BaseModel):
+    target: str = Field(
+        default="data",
+        description="Which report file to read: 'data' or 'models'."
+    )
 
 
 class ReadReportTool(BaseTool):
     name: str = "read_report"
     description: str = (
-        "Read the current state of the workflow report file (output/report.md). "
-        "Use this to review what has already been documented before appending "
-        "new sections, ensuring no duplication and consistent formatting."
+        "Read the current state of a workflow report file. "
+        "target='data' reads output/data/data_output.md, "
+        "target='models' reads output/models/models_output.md. "
+        "Use this to review what has already been documented before "
+        "appending new sections."
     )
-    args_schema: type[BaseModel] = _NoInput
+    args_schema: type[BaseModel] = ReadReportInput
 
-    def _run(self) -> str:
-        report_path = os.path.join(OUTPUT_DIR, "report.md")
+    def _run(self, target: str = "data") -> str:
+        resolved = target if target in REPORT_FILES else "data"
+        report_path = REPORT_FILES[resolved]
         if not os.path.exists(report_path):
-            return "Report file does not exist yet. Use write_report to create it."
+            return f"Report file {report_path} does not exist yet. Use write_report to create it."
         with open(report_path, "r", encoding="utf-8") as f:
             content = f.read()
         if len(content) > 8000:
@@ -121,9 +166,9 @@ class ReadReportTool(BaseTool):
 
 class MarkdownTableInput(BaseModel):
     headers: list[str] = Field(description="Column headers for the table.")
-    rows: list[str] = Field(
-        description="Row data as JSON string. Each element is a list of strings matching the headers. "
-                    "Example: '[\"5.2\", \"3.8\", \"0.95\"]' for a single row, or pass the full list."
+    rows: list[list[str]] = Field(
+        description="Table rows. Each row is a list of strings matching the headers. "
+                    "Example: [['5.2', '3.8', '0.95'], ['4.1', '2.9', '0.88']]."
     )
     title: Optional[str] = Field(default=None, description="Optional table caption.")
 
@@ -137,23 +182,7 @@ class MarkdownTableTool(BaseTool):
     )
     args_schema: type[BaseModel] = MarkdownTableInput
 
-    def _run(self, headers: list[str], rows: list[str], title: Optional[str] = None) -> str:
-        # Parse rows: if first element looks like JSON list, parse it
-        parsed_rows = []
-        if rows:
-            first = rows[0]
-            if isinstance(first, str) and first.strip().startswith("["):
-                try:
-                    parsed_rows = json.loads(first.strip())
-                    if isinstance(parsed_rows, list) and parsed_rows and isinstance(parsed_rows[0], list):
-                        pass  # already list of lists
-                    elif isinstance(parsed_rows, list):
-                        parsed_rows = [parsed_rows]
-                except (json.JSONDecodeError, TypeError):
-                    parsed_rows = [[str(c) for c in rows]]
-            else:
-                parsed_rows = [[str(c) for c in rows]]
-        rows = parsed_rows
+    def _run(self, headers: list[str], rows: list[list[str]], title: Optional[str] = None) -> str:
         if not headers:
             return "Error: headers cannot be empty"
         col_widths = [len(h) for h in headers]
@@ -183,18 +212,28 @@ class MarkdownTableTool(BaseTool):
 
 # ── Table of Contents Generator ─────────────────────────────────────────────
 
+class TOCInput(BaseModel):
+    target: str = Field(
+        default="data",
+        description="Which report file to generate TOC for: 'data' or 'models'."
+    )
+
+
 class ReportTOCTool(BaseTool):
     name: str = "report_toc"
     description: str = (
-        "Generate a table of contents from the current report (output/report.md). "
-        "Scans all ## and ### headers and produces a linked TOC in Markdown."
+        "Generate a table of contents from a report file. "
+        "target='data' scans output/data/data_output.md, "
+        "target='models' scans output/models/models_output.md. "
+        "Produces a linked Markdown TOC."
     )
-    args_schema: type[BaseModel] = _NoInput
+    args_schema: type[BaseModel] = TOCInput
 
-    def _run(self) -> str:
-        report_path = os.path.join(OUTPUT_DIR, "report.md")
+    def _run(self, target: str = "data") -> str:
+        resolved = target if target in REPORT_FILES else "data"
+        report_path = REPORT_FILES[resolved]
         if not os.path.exists(report_path):
-            return "Report file does not exist yet. Use write_report first."
+            return f"Report file {report_path} does not exist yet. Use write_report first."
         with open(report_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
@@ -290,97 +329,7 @@ class RenderMetricsTool(BaseTool):
         return tool._run(headers=headers, rows=rows, title="Model Comparison")
 
 
-# ── Read Pipeline Artifact ──────────────────────────────────────────────────
-
-class ReadArtifactInput(BaseModel):
-    filepath: str = Field(
-        description="Path to the artifact file (CSV, Parquet, JSON, or Markdown). "
-                    "Relative to the project root.",
-    )
-    max_rows: int = Field(default=10, description="Max rows to preview for tabular data.")
-
-
-class ReadArtifactTool(BaseTool):
-    name: str = "read_artifact"
-    description: str = (
-        "Read any pipeline artifact file (CSV, Parquet, JSON, Markdown) and "
-        "return a summary suitable for inclusion in the report. For tabular "
-        "data, returns shape, columns, dtypes, and a preview. For JSON, "
-        "returns formatted content. For Markdown, returns the content directly."
-    )
-    args_schema: type[BaseModel] = ReadArtifactInput
-
-    def _run(self, filepath: str, max_rows: int = 10) -> str:
-        full_path = filepath if os.path.isabs(filepath) else os.path.join(DATA_DIR, filepath)
-        if not os.path.exists(full_path):
-            # Also try output dir
-            alt_path = os.path.join(OUTPUT_DIR, filepath)
-            if os.path.exists(alt_path):
-                full_path = alt_path
-            else:
-                return f"File not found: {filepath} (checked {DATA_DIR} and {OUTPUT_DIR})"
-
-        ext = os.path.splitext(full_path)[1].lower()
-        if ext == ".csv":
-            return self._read_csv(full_path, max_rows)
-        elif ext == ".parquet":
-            return self._read_parquet(full_path, max_rows)
-        elif ext == ".json":
-            return self._read_json(full_path)
-        elif ext in (".md", ".markdown", ".txt"):
-            return self._read_text(full_path)
-        else:
-            return f"Unsupported file type: {ext}"
-
-    def _read_csv(self, path: str, max_rows: int) -> str:
-        import pandas as pd
-        try:
-            df = pd.read_csv(path, nrows=max_rows + 100)
-        except Exception as e:
-            return f"Error reading CSV: {e}"
-        lines = [f"**File:** `{path}`"]
-        lines.append(f"**Shape:** {df.shape[0]} rows x {df.shape[1]} columns")
-        lines.append(f"**Columns:** {', '.join(df.columns.tolist())}")
-        lines.append(f"**Dtypes:** {', '.join(f'{c}={str(dt)}' for c, dt in df.dtypes.items())}")
-        nulls = df.isna().sum()
-        if nulls.any():
-            null_cols = nulls[nulls > 0]
-            lines.append(f"**Nulls:** {', '.join(f'{c}={int(v)}' for c, v in null_cols.items())}")
-        lines.append(f"\n**Preview (first {min(max_rows, len(df))} rows):**")
-        tool = MarkdownTableTool()
-        headers = df.columns.tolist()
-        rows = df.head(max_rows).astype(str).values.tolist()
-        lines.append(tool._run(headers=headers, rows=rows))
-        return "\n".join(lines)
-
-    def _read_parquet(self, path: str, max_rows: int) -> str:
-        import pandas as pd
-        try:
-            df = pd.read_parquet(path)
-        except Exception as e:
-            return f"Error reading Parquet: {e}"
-        lines = [f"**File:** `{path}`"]
-        lines.append(f"**Shape:** {df.shape[0]} rows x {df.shape[1]} columns")
-        lines.append(f"**Columns:** {', '.join(df.columns.tolist())}")
-        lines.append(f"\n**Preview (first {min(max_rows, len(df))} rows):**")
-        tool = MarkdownTableTool()
-        headers = df.columns.tolist()
-        rows = df.head(max_rows).astype(str).values.tolist()
-        lines.append(tool._run(headers=headers, rows=rows))
-        return "\n".join(lines)
-
-    def _read_json(self, path: str) -> str:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return f"**File:** `{path}`\n\n```json\n{json.dumps(data, indent=2, ensure_ascii=False)}\n```"
-        except Exception as e:
-            return f"Error reading JSON: {e}"
-
-    def _read_text(self, path: str) -> str:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            return content
-        except Exception as e:
-            return f"Error reading text file: {e}"
+# ── Read Pipeline Artifact (shared implementation) ─────────────────────────
+# ReadArtifactTool is defined in thesiscrew.tools.artifact_tool and imported
+# above so it can be reused by any agent, not just the report writer.
+ReadArtifactTool, ReadArtifactInput  # silence unused-import linters

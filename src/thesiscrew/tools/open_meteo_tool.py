@@ -13,6 +13,8 @@ from typing import Type, Optional
 from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
+from thesiscrew.tools.cache_util import disk_cache
+
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
@@ -80,6 +82,7 @@ class HistoricalWeatherTool(BaseTool):
     )
     args_schema: Type[BaseModel] = HistoricalWeatherInput
 
+    @disk_cache(ttl_hours=168)
     def _run(
         self,
         latitude: float,
@@ -150,6 +153,7 @@ class ForecastWeatherTool(BaseTool):
     )
     args_schema: Type[BaseModel] = ForecastWeatherInput
 
+    @disk_cache(ttl_hours=6)
     def _run(
         self,
         latitude: float,
@@ -204,6 +208,7 @@ class KorneuburgWeatherTool(BaseTool):
     )
     args_schema: Type[BaseModel] = KorneuburgWeatherInput
 
+    @disk_cache(ttl_hours=168)
     def _run(self, start_date: str, end_date: str) -> str:
         tool = HistoricalWeatherTool()
         return tool._run(
@@ -224,6 +229,7 @@ class KorneuburgForecastTool(BaseTool):
     )
     args_schema: Type[BaseModel] = KorneuburgForecastInput
 
+    @disk_cache(ttl_hours=6)
     def _run(self, forecast_days: int = 7) -> str:
         tool = ForecastWeatherTool()
         return tool._run(
