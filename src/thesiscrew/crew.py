@@ -61,6 +61,7 @@ from thesiscrew.tools.report_writer_tool import (
     ReportTOCTool,
     RenderMetricsTool,
 )
+from thesiscrew.tools.html_report_tool import BuildHtmlReportTool
 
 import litellm
 import urllib3
@@ -246,13 +247,11 @@ class Thesiscrew(CrewCallbacks):
             allow_delegation=False,
             output_file='output/verification_analyst.md',
             max_retry_limit=2,
-            max_iter=12,
+            max_iter=6,
             max_execution_time=600,
             max_rpm=60,
             cache=True,
             inject_date=True,
-            reasoning=True,
-            max_reasoning_attempts=2,
             tools=[
                 ComputeMetricsTool(),
                 StratifiedMetricsTool(),
@@ -274,7 +273,7 @@ class Thesiscrew(CrewCallbacks):
             allow_delegation=False,
             max_retry_limit=2,
             max_iter=12,
-            max_execution_time=600,
+            max_execution_time=1200,
             max_rpm=60,
             cache=True,
             inject_date=True,
@@ -285,6 +284,27 @@ class Thesiscrew(CrewCallbacks):
                 ReportTOCTool(),
                 RenderMetricsTool(),
                 ReadArtifactTool(),
+            ],
+        )
+
+    @agent
+    def frontend_specialist(self) -> Agent:
+        return Agent(
+            config=self.agents_config['frontend_specialist'],
+            llm=agent_llm("frontend_specialist"),
+            verbose=True,
+            output_file='output/frontend_specialist.md',
+            allow_delegation=False,
+            max_retry_limit=2,
+            max_iter=6,
+            max_execution_time=600,
+            max_rpm=60,
+            cache=True,
+            inject_date=True,
+            tools=[
+                ReadArtifactTool(),
+                ListDataFilesTool(),
+                BuildHtmlReportTool(),
             ],
         )
 
@@ -379,23 +399,49 @@ class Thesiscrew(CrewCallbacks):
         )
 
     @task
-    def verification_task(self) -> Task:
-        if supports_structured_outputs():
-            return Task(
-                config=self.tasks_config['verification_task'],
-                output_file='output/models/verification_report.json',
-                create_directory=True,
-                output_pydantic=VerificationReport,
-                guardrail=validate_verification_output,
-                guardrail_max_retries=2,
-                callback=self._render_verification_report,
-            )
+    def verification_baseline_task(self) -> Task:
         return Task(
-            config=self.tasks_config['verification_task'],
+            config=self.tasks_config['verification_baseline_task'],
+            output_file='output/models/verification_baseline.json',
+            create_directory=True,
+            async_execution=True,
+        )
+
+    @task
+    def verification_walkforward_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verification_walkforward_task'],
+            output_file='output/models/verification_walkforward.json',
+            create_directory=True,
+            async_execution=True,
+        )
+
+    @task
+    def verification_stratified_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verification_stratified_task'],
+            output_file='output/models/verification_stratified.json',
+            create_directory=True,
+            async_execution=True,
+        )
+
+    @task
+    def verification_synthesis_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['verification_synthesis_task'],
             output_file='output/phase5_verification.md',
             create_directory=True,
             guardrail=validate_verification_output,
             guardrail_max_retries=2,
+            callback=self._render_verification_report,
+            context=[
+                self.verification_baseline_task(),
+                self.verification_walkforward_task(),
+                self.verification_stratified_task(),
+                self.model_training_task(),
+                self.baseline_modeling_task(),
+                self.data_ingestion_task(),
+            ],
         )
 
     @task
@@ -408,19 +454,48 @@ class Thesiscrew(CrewCallbacks):
 
     @task
     def report_writing_task(self) -> Task:
+        # Build context dynamically so resuming does not reference skipped tasks.
+        candidate_context = [
+            self.station_discovery_task(),
+            self.data_ingestion_task(),
+            self.feature_engineering_task(),
+            self.baseline_modeling_task(),
+            self.model_training_task(),
+            self.verification_baseline_task(),
+            self.verification_walkforward_task(),
+            self.verification_stratified_task(),
+            self.verification_synthesis_task(),
+            self.final_documentation_task(),
+        ]
+        completed = self._load_completed_output_files()
+        active_context = [
+            t for t in candidate_context
+            if getattr(t, "output_file", None) not in completed
+        ]
+        # Always include final docs and synthesis if they exist; otherwise the
+        # report writer has nothing to compile. Fall back to all candidates when
+        # resume is not active.
+        if not active_context:
+            active_context = candidate_context
+
         return Task(
             config=self.tasks_config['report_writing_task'],
             output_file='output/phase5_report.md',
             create_directory=True,
             guardrail=validate_report_output,
             guardrail_max_retries=2,
+            context=active_context,
+        )
+
+    @task
+    def frontend_final_report_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['frontend_final_report_task'],
+            output_file='output/phase5_frontend_final_report.md',
+            create_directory=True,
             context=[
-                self.station_discovery_task(),
-                self.data_ingestion_task(),
-                self.feature_engineering_task(),
-                self.baseline_modeling_task(),
-                self.model_training_task(),
-                self.verification_task(),
+                self.report_writing_task(),
+                self.verification_synthesis_task(),
                 self.final_documentation_task(),
             ],
         )
@@ -438,9 +513,11 @@ class Thesiscrew(CrewCallbacks):
             print("WARNING: OPENAI_API_KEY not set or is 'NA'; disabling crew memory. "
                   "Set a valid key to enable cross-agent memory and context reuse.")
 
+        tasks = self._filter_tasks_for_resume(self.tasks)
+
         return Crew(
             agents=self.agents,
-            tasks=self.tasks,
+            tasks=tasks,
             process=Process.sequential,
             verbose=True,
             memory=use_memory,

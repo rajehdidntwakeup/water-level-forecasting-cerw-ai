@@ -21,7 +21,13 @@ from thesiscrew.tools.dataset_tool import (
     BuildKorneuburgDatasetTool,
     BuildFeatureMatrixTool,
 )
-from thesiscrew.tools.model_evaluation_tool import TrainGradientBoostingTool
+from thesiscrew.tools.model_evaluation_tool import (
+    TrainGradientBoostingTool,
+    PersistenceBaselineTool,
+    WalkForwardTool,
+    StratifiedMetricsTool,
+)
+from thesiscrew.tools.data_processing_tool import ComputeMetricsTool
 
 OUTPUT_DIR = os.environ.get("PEGELHUB_OUTPUT_DIR", "output")
 DATA_DIR = os.environ.get("PEGELHUB_DATA_DIR", os.path.join(OUTPUT_DIR, "data"))
@@ -272,19 +278,150 @@ class CrewCallbacks:
             except Exception as e:
                 _safe_print(f"[preflight] Model training warning (crew will continue): {e}")
 
+        self._preflight_verification()
+
         return inputs
+
+    def _preflight_verification(self) -> None:
+        """Pre-compute verification numbers so the LLM only synthesises them."""
+        import json as _json
+
+        dataset_path = os.path.join(DATA_DIR, "processed", "korneuburg_hourly.csv")
+        feature_path = os.path.join(DATA_DIR, "features", "feature_matrix.csv")
+        test_path = os.path.join(DATA_DIR, "features", "feature_matrix_test.csv")
+        verification_path = os.path.join(MODELS_DIR, "verification_inputs.json")
+
+        if not os.path.exists(feature_path):
+            return
+
+        os.makedirs(MODELS_DIR, exist_ok=True)
+
+        # If already computed, refresh only if predictions are newer.
+        if os.path.exists(verification_path):
+            try:
+                mtime_ver = os.path.getmtime(verification_path)
+                mtime_pred = os.path.getmtime(os.path.join(MODELS_DIR, "gbm_predictions_h1.csv")) \
+                    if os.path.exists(os.path.join(MODELS_DIR, "gbm_predictions_h1.csv")) else 0
+                if mtime_ver >= mtime_pred:
+                    _safe_print("[preflight] Verification inputs are up to date.")
+                    return
+            except Exception:
+                pass
+
+        _safe_print("[preflight] Computing verification artifacts...")
+        inputs: Dict[str, Any] = {}
+
+        # Tools resolve relative paths against DATA_DIR, so pass absolute paths
+        # for files that live outside that directory (e.g. models/).
+        feature_abs = os.path.abspath(feature_path)
+        test_abs = os.path.abspath(test_path)
+
+        try:
+            persistence = PersistenceBaselineTool()._run(
+                filepath=feature_abs,
+                column="water_level",
+                horizons=[1, 6, 12, 24, 48, 72, 168],
+            )
+            inputs["persistence"] = _json.loads(persistence)
+        except Exception as e:
+            _safe_print(f"[preflight] persistence baseline warning: {e}")
+            inputs["persistence"] = {"error": str(e)}
+
+        inputs["gbm_overall"] = {}
+        for h in [1, 6, 12, 24, 48, 72, 168]:
+            pred_file = os.path.join(MODELS_DIR, f"gbm_predictions_h{h}.csv")
+            if not os.path.exists(pred_file):
+                continue
+            pred_abs = os.path.abspath(pred_file)
+            try:
+                metrics = ComputeMetricsTool()._run(
+                    actual_filepath=test_abs,
+                    predicted_filepath=pred_abs,
+                    actual_col="water_level",
+                    predicted_col="predicted",
+                )
+                inputs["gbm_overall"][f"h={h}"] = _json.loads(metrics)
+            except Exception as e:
+                _safe_print(f"[preflight] metrics h={h} warning: {e}")
+                inputs["gbm_overall"][f"h={h}"] = {"error": str(e)}
+
+        try:
+            walkforward = WalkForwardTool()._run(
+                filepath=feature_abs,
+                timestamp_col="timestamp",
+                target_col="water_level",
+                train_window=168,
+                test_window=24,
+                n_splits=5,
+            )
+            inputs["walk_forward"] = _json.loads(walkforward)
+        except Exception as e:
+            _safe_print(f"[preflight] walk-forward warning: {e}")
+            inputs["walk_forward"] = {"error": str(e)}
+
+        inputs["stratified"] = {}
+        for h in [1, 6, 12, 24, 48, 72, 168]:
+            pred_file = os.path.join(MODELS_DIR, f"gbm_predictions_h{h}.csv")
+            if not os.path.exists(pred_file):
+                continue
+            pred_abs = os.path.abspath(pred_file)
+            try:
+                stratified = StratifiedMetricsTool()._run(
+                    actual_filepath=test_abs,
+                    predicted_filepath=pred_abs,
+                    actual_col="water_level",
+                    predicted_col="predicted",
+                )
+                inputs["stratified"][f"h={h}"] = _json.loads(stratified)
+            except Exception as e:
+                _safe_print(f"[preflight] stratified h={h} warning: {e}")
+                inputs["stratified"][f"h={h}"] = {"error": str(e)}
+
+        inputs["metadata"] = {
+            "dataset": dataset_path,
+            "feature_matrix": feature_path,
+            "test_split": test_path,
+            "models_dir": MODELS_DIR,
+            "computed_at": datetime.utcnow().isoformat() + "Z",
+        }
+
+        try:
+            with open(verification_path, "w", encoding="utf-8") as f:
+                _json.dump(inputs, f, indent=2, ensure_ascii=False)
+            _safe_print(f"[preflight] Verification inputs written to {verification_path}")
+        except Exception as e:
+            _safe_print(f"[preflight] Could not write verification inputs: {e}")
 
     def _log_results(self, result):
         """Persist a concise run summary after the crew finishes."""
+        token_usage = getattr(result, "token_usage", None)
         summary = {
             "tasks_completed": len(result.tasks_output) if result.tasks_output else 0,
-            "token_usage": result.token_usage,
+            "token_usage": self._serialize_token_usage(token_usage),
             "summary": result.raw[:500] if result.raw else "",
         }
         summary_path = os.path.join(OUTPUT_DIR, "run_summary.json")
         with open(summary_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+            json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
         return result
+
+    def _serialize_token_usage(self, token_usage) -> Any:
+        """Convert CrewAI UsageMetrics to a JSON-serializable dict."""
+        if token_usage is None:
+            return None
+        if isinstance(token_usage, dict):
+            return token_usage
+        if hasattr(token_usage, "model_dump"):
+            try:
+                return token_usage.model_dump()
+            except Exception:
+                pass
+        if hasattr(token_usage, "dict"):
+            try:
+                return token_usage.dict()
+            except Exception:
+                pass
+        return str(token_usage)
 
     def _on_task_complete(self, output: TaskOutput) -> None:
         _safe_print(f"TASK DONE: '{output.description}' by {output.agent}")
@@ -329,6 +466,72 @@ class CrewCallbacks:
         path = os.path.join(checkpoint_dir, filename)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        self._update_checkpoint_manifest(output)
+
+    def _update_checkpoint_manifest(self, output: TaskOutput) -> None:
+        """Maintain a simple manifest mapping output file to task metadata."""
+        checkpoint_dir = os.path.join(OUTPUT_DIR, ".checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        manifest_path = os.path.join(checkpoint_dir, "completed_tasks.json")
+        manifest: Dict[str, Any] = {}
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except Exception:
+                manifest = {}
+        output_file = getattr(output, "output_file", None)
+        if output_file:
+            manifest[output_file] = {
+                "description": output.description,
+                "agent": output.agent,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        try:
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            _safe_print(f"[checkpoint] Could not update manifest: {e}")
+
+    def _load_completed_output_files(self) -> set[str]:
+        """Return output file paths that have a non-empty checkpoint manifest entry."""
+        completed: set[str] = set()
+        manifest_path = os.path.join(OUTPUT_DIR, ".checkpoints", "completed_tasks.json")
+        if not os.path.exists(manifest_path):
+            return completed
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            return completed
+        for output_file, info in manifest.items():
+            if not isinstance(info, dict):
+                continue
+            if output_file and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                completed.add(output_file)
+        return completed
+
+    def _filter_tasks_for_resume(self, tasks: List[Any]) -> List[Any]:
+        """Opt-in resume: skip tasks whose output files already exist.
+
+        Enabled by setting environment variable CREW_RESUME=1.
+        """
+        resume = os.environ.get("CREW_RESUME", "").lower() in ("1", "true", "yes")
+        if not resume:
+            return tasks
+        completed = self._load_completed_output_files()
+        if not completed:
+            return tasks
+        _safe_print(f"[resume] Found {len(completed)} completed task(s); filtering tasks.")
+        filtered = []
+        for task in tasks:
+            output_file = getattr(task, "output_file", None)
+            if output_file and output_file in completed:
+                _safe_print(f"[resume] skipping: {task.description[:80]}...")
+                continue
+            filtered.append(task)
+        _safe_print(f"[resume] {len(filtered)} task(s) remaining.")
+        return filtered
 
     def _load_checkpoints(self) -> dict:
         """Load checkpointed task outputs keyed by description."""
@@ -447,7 +650,36 @@ class CrewCallbacks:
         manifest_path = os.path.join(ARTIFACTS_DIR, "manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest.model_dump(), f, indent=2)
+
+        # Ensure the final HTML report exists and is valid, even if the
+        # frontend specialist task misbehaved or was skipped on resume.
+        self._ensure_final_report()
+
         return result
+
+    def _ensure_final_report(self) -> None:
+        """Deterministically rebuild output/final_report.html if it is missing or invalid."""
+        try:
+            from thesiscrew.tools.html_report_tool import BuildHtmlReportTool
+
+            report_path = os.path.join(OUTPUT_DIR, "final_report.html")
+            min_size = 20_000  # A real styled report is much larger than agent chatter.
+            needs_rebuild = True
+
+            if os.path.exists(report_path) and os.path.getsize(report_path) >= min_size:
+                with open(report_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                needs_rebuild = not BuildHtmlReportTool.validate_html(content)
+
+            if needs_rebuild:
+                _safe_print("[final-report] Rebuilding output/final_report.html deterministically...")
+                tool = BuildHtmlReportTool()
+                result = tool._run(style="academic", include_charts=True)
+                _safe_print(f"[final-report] {result}")
+            else:
+                _safe_print("[final-report] output/final_report.html is present and valid.")
+        except Exception as e:
+            _safe_print(f"[final-report] Could not ensure final report: {e}")
 
 
 # ---------------------------------------------------------------------------

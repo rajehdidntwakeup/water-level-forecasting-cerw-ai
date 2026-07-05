@@ -54,6 +54,7 @@ from thesiscrew.tools.report_writer_tool import (
     RenderMetricsTool,
     ReadArtifactTool,
 )
+from thesiscrew.tools.html_report_tool import BuildHtmlReportTool
 
 __all__ = [
     # Pegelonline
@@ -104,4 +105,6 @@ __all__ = [
     "ReportTOCTool",
     "RenderMetricsTool",
     "ReadArtifactTool",
+    # HTML report
+    "BuildHtmlReportTool",
 ]

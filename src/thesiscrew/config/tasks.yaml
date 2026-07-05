@@ -283,51 +283,91 @@ frontend_task:
 # Phase 5 — Verification & Documentation
 # ---------------------------------------------------------------------------
 
-verification_task:
+verification_baseline_task:
   description: >
-    Perform rigorous forecast verification against official forecasts and
-    baselines. This is the critical evaluation step required by the use case:
-    "Explore available data that also includes original forecast data, so that
-    appropriate verification can be carried out."
+    Compute the persistence baseline and the AI model's overall verification
+    metrics for every forecast horizon.
 
-    BEFORE you start, read the previous phase outputs:
-    - output/phase3_model_training.md for model predictions and metrics
-    - output/phase2_baseline_modeling.md for baseline metrics
-    - output/phase1_data_ingestion.md to confirm official forecast (WV) data
-      availability and any data-quality caveats
+    Use the pre-computed artifacts in output/models/verification_inputs.json
+    whenever they exist. If they are missing, run the tools directly:
+    - persistence_baseline on output/data/features/feature_matrix.csv
+    - compute_metrics for each horizon using output/models/gbm_predictions_h*.csv
+      versus the matching actuals in output/data/features/feature_matrix_test.csv
 
-    1. Walk-forward validation: slide a training window forward in time,
-       evaluate on each subsequent test block. Report average and spread of
-       metrics.
-    2. Stratified evaluation — compute metrics separately for:
-       - Flow regimes: low water, normal, elevated, warning, alert levels
-         (using MW96 and characteristic thresholds)
-       - Seasons: winter, spring melt, summer storms, autumn
-       - Upstream conditions: with vs without upstream rainfall events
-    3. Compute full metric suite per stratum:
-       RMSE, MAE, MAPE, NSE, bias, CRPS (if probabilistic forecasts exist).
-    4. Produce comparative charts:
-       - Time-series overlay: measured vs AI forecast vs official forecast
-         with confidence bands and threshold lines.
-       - Scatter plots: predicted vs actual per horizon.
-       - Error distribution histograms.
-    5. Identify failure modes: when does the model deviate most? Flood peaks?
-       Rapid rises? Snowmelt events?
-    6. Document: can the AI model beat the official forecast in any regime
-       or horizon? If so, where exactly?
-
-    Write your final result as a Markdown report to
-    output/phase5_verification.md.
+    Write a concise JSON summary to output/models/verification_baseline.json
+    with sections: persistence, gbm_overall, and metadata.
   expected_output: >
-    A Markdown file at output/phase5_verification.md containing:
-    - Walk-forward validation results (metrics per fold)
-    - Stratified metrics tables (by flow regime, season, upstream condition)
-    - Comparative time-series charts (AI vs official vs measured)
-    - Scatter plots and error distribution plots
-    - Failure-mode analysis: conditions under which model degrades
-    - Verdict summary: which model, which horizons, which regimes beat the
-      official forecast
+    A JSON file at output/models/verification_baseline.json containing
+    persistence baseline metrics and GBM overall metrics per horizon
+    (RMSE, MAE, MAPE, NSE, bias).
   agent: verification_analyst
+
+verification_walkforward_task:
+  description: >
+    Run walk-forward validation on the feature matrix to assess temporal
+    robustness of the AI model.
+
+    Use the pre-computed artifacts in output/models/verification_inputs.json
+    whenever they exist. If they are missing, run walk_forward_validation on
+    output/data/features/feature_matrix.csv, then compute_metrics for each fold.
+
+    Write a concise JSON summary to output/models/verification_walkforward.json
+    with fold indices, per-fold metrics, and mean/spread of the metric suite.
+  expected_output: >
+    A JSON file at output/models/verification_walkforward.json containing
+    walk-forward fold definitions and per-fold metrics (RMSE, MAE, MAPE, NSE,
+    bias) plus average and spread.
+  agent: verification_analyst
+
+verification_stratified_task:
+  description: >
+    Compute stratified verification metrics for the AI model.
+
+    Use the pre-computed artifacts in output/models/verification_inputs.json
+    whenever they exist. If they are missing, run compute_stratified_metrics
+    for flow regimes (low, normal, elevated, warning) using the GBM predictions
+    at each horizon.
+
+    Write a concise JSON summary to output/models/verification_stratified.json
+    with overall metrics and per-regime metrics per horizon.
+  expected_output: >
+    A JSON file at output/models/verification_stratified.json containing
+    overall metrics and stratified metrics by flow regime for each horizon.
+  agent: verification_analyst
+
+verification_synthesis_task:
+  description: >
+    Synthesize the verification results into the final Phase 5 Markdown report.
+
+    BEFORE you start, read:
+    - output/models/verification_baseline.json
+    - output/models/verification_walkforward.json
+    - output/models/verification_stratified.json
+    - the metrics sections of output/phase3_model_training.md and
+      output/phase2_baseline_modeling.md
+
+    Produce a concise but rigorous report at output/phase5_verification.md
+    containing:
+    1. Head-to-head metric table: AI vs persistence vs official forecast (if WV
+       data exists) per horizon.
+    2. Walk-forward validation summary: average and spread of per-fold metrics.
+    3. Stratified metrics table by flow regime (and season/upstream conditions
+       if data supports it).
+    4. Descriptions of comparative charts, scatter plots, and error
+       distributions (the underlying numeric results are enough; actual plot
+       files are optional).
+    5. Failure-mode analysis: flood peaks, rapid rises, snowmelt events.
+    6. Verdict: which model/horizon/regime beats the official forecast and
+       where it does not.
+  expected_output: >
+    A Markdown file at output/phase5_verification.md with verification
+    metrics tables, stratified evaluation, chart descriptions, failure-mode
+    analysis, and a clear verdict against official forecasts.
+  agent: verification_analyst
+  context:
+    - verification_baseline_task
+    - verification_walkforward_task
+    - verification_stratified_task
 
 final_documentation_task:
   description: >
@@ -465,3 +505,37 @@ report_writing_task:
     table format. Also create output/phase5_report.md as a single combined
     report for easy review.
   agent: report_writer
+
+frontend_final_report_task:
+  description: >
+    Produce the final human-friendly HTML report.
+
+    BEFORE you start, read the Phase 5 Markdown reports and numeric artifacts
+    produced by the upstream agents so you know what content and numbers are
+    available:
+    - output/phase5_verification.md
+    - output/phase5_final_documentation.md
+    - output/data/data_output.md
+    - output/models/models_output.md
+    - output/phase5_report.md
+    - output/models/verification_inputs.json
+    - output/models/gbm_predictions_h*.csv
+
+    Then call the build_html_report tool EXACTLY ONCE with these arguments:
+    style='academic', include_charts=True. The tool writes the actual
+    browser-ready HTML to output/final_report.html independently; do NOT try to
+    write HTML yourself. Your task output file (output/phase5_frontend_final_report.md)
+    should be a brief Markdown confirmation of the report.
+
+    After the tool runs, confirm that output/final_report.html exists and
+    briefly list the main sections and chart types included.
+  expected_output: >
+    A brief Markdown confirmation at output/phase5_frontend_final_report.md.
+    The standalone HTML file output/final_report.html must contain the full
+    thesis report with modern CSS styling, navigation sidebar, interactive
+    charts, and responsive layout.
+  agent: frontend_specialist
+  context:
+    - report_writing_task
+    - verification_synthesis_task
+    - final_documentation_task
