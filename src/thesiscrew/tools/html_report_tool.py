@@ -345,16 +345,44 @@ class BuildHtmlReportTool(BaseTool):
         return text
 
     def _load_json_artifact(self, path: str) -> dict[str, Any]:
-        """Load a JSON artifact, handling optional code fences and errors."""
+        """Load a JSON artifact, handling optional code fences and errors.
+
+        Some artifacts (e.g. verification_baseline.json) are wrapped in a
+        Markdown document with multiple fenced JSON blocks. Plain JSON is tried
+        first; if that fails, all fenced JSON blocks are extracted and merged.
+        """
         if not os.path.exists(path):
             return {}
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = f.read()
-            raw = self._unwrap_fenced_block(raw)
-            return json.loads(raw)
+            # Plain JSON or a single fenced block.
+            try:
+                return json.loads(self._unwrap_fenced_block(raw))
+            except Exception:
+                pass
+            # Fallback: merge every fenced JSON object found in the file.
+            merged: dict[str, Any] = {}
+            for block in self._extract_fenced_json_blocks(raw):
+                if isinstance(block, dict):
+                    merged.update(block)
+            return merged
         except Exception:
             return {}
+
+    @staticmethod
+    def _extract_fenced_json_blocks(text: str) -> list[dict[str, Any]]:
+        """Return all JSON objects found inside ```json ... ``` fences."""
+        pattern = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+        blocks: list[dict[str, Any]] = []
+        for match in pattern.findall(text):
+            try:
+                parsed = json.loads(match.strip())
+                if isinstance(parsed, dict):
+                    blocks.append(parsed)
+            except Exception:
+                continue
+        return blocks
 
     @staticmethod
     def _inline_md_to_html(text: str) -> str:
@@ -679,62 +707,113 @@ class BuildHtmlReportTool(BaseTool):
         return merged
 
     def _build_metrics_summary(self, verification: dict[str, Any]) -> dict[str, Any]:
-        """Extract key headline metrics for the hero cards."""
-        gbm = verification.get("gbm_overall", {})
-        persistence = verification.get("persistence", {}).get("metrics", {})
-        if not gbm:
+        """Extract key headline metrics for the hero cards from prediction CSVs."""
+        available_horizons = [h for h in [1, 6, 12, 24, 48, 72, 168]
+                              if os.path.exists(os.path.join(OUTPUT_DIR, "models", f"gbm_predictions_h{h}.csv"))]
+        if not available_horizons:
             return {}
 
-        best_h = None
-        best_rmse = float("inf")
-        for h, metrics in gbm.items():
-            if isinstance(metrics, dict) and "RMSE_cm" in metrics:
-                rmse = metrics["RMSE_cm"]
-                if rmse < best_rmse:
-                    best_rmse = rmse
-                    best_h = h
+        gbm_metrics: dict[int, dict[str, Any]] = {}
+        for h in available_horizons:
+            pred_path = os.path.join(OUTPUT_DIR, "models", f"gbm_predictions_h{h}.csv")
+            gbm_metrics[h] = self._compute_csv_metrics(pred_path)
 
-        horizons = sorted(
-            [h for h, m in gbm.items() if isinstance(m, dict) and "RMSE_cm" in m],
-            key=lambda h: int(h.split("=")[-1]) if "=" in h else h,
-        )
-        last_h = horizons[-1] if horizons else None
+        best_h: int | None = None
+        best_rmse = float("inf")
+        for h, metrics in gbm_metrics.items():
+            rmse = metrics.get("rmse")
+            if rmse is not None and rmse < best_rmse:
+                best_rmse = rmse
+                best_h = h
+
+        last_h = available_horizons[-1]
         return {
-            "best_horizon": best_h,
-            "best_rmse": best_rmse,
-            "best_nse": gbm.get(best_h, {}).get("NSE") if best_h else None,
-            "horizon_count": len(horizons),
-            "long_horizon": last_h,
-            "long_rmse": gbm.get(last_h, {}).get("RMSE_cm") if last_h else None,
-            "pers_best": persistence.get(horizons[0], {}).get("rmse") if horizons else None,
+            "best_horizon": f"h={best_h}" if best_h else None,
+            "best_rmse": best_rmse if best_h else None,
+            "best_nse": gbm_metrics.get(best_h, {}).get("nse") if best_h else None,
+            "horizon_count": len(available_horizons),
+            "long_horizon": f"h={last_h}",
+            "long_rmse": gbm_metrics.get(last_h, {}).get("rmse"),
         }
 
+    @staticmethod
+    def _compute_csv_metrics(path: str) -> dict[str, Any]:
+        """Compute RMSE, MAE, NSE, and bias from a predictions CSV file."""
+        try:
+            import pandas as pd
+            import numpy as np
+
+            df = pd.read_csv(path)
+            if not {"actual", "predicted"}.issubset(df.columns):
+                return {}
+            df = df.dropna(subset=["actual", "predicted"])
+            if len(df) == 0:
+                return {}
+            actual = df["actual"].astype(float)
+            predicted = df["predicted"].astype(float)
+            error = predicted - actual
+            ss_res = float(np.sum(error**2))
+            ss_tot = float(np.sum((actual - actual.mean())**2))
+            nse = 1 - ss_res / ss_tot if ss_tot != 0 else float("nan")
+            return {
+                "rmse": float(np.sqrt(np.mean(error**2))),
+                "mae": float(np.mean(np.abs(error))),
+                "nse": nse,
+                "bias": float(np.mean(error)),
+                "n": len(df),
+            }
+        except Exception:
+            return {}
+
     def _build_charts(self, verification: dict[str, Any]) -> list[dict[str, Any]]:
-        """Build Plotly chart specs from numeric artifacts."""
+        """Build Plotly chart specs from numeric artifacts and prediction CSVs.
+
+        Headline RMSE/NSE charts are computed directly from the GBM prediction CSVs
+        so that summary metrics match the time-series and scatter charts. This avoids
+        mixing inconsistent scales from merged verification artifacts.
+        """
         charts: list[dict[str, Any]] = []
-        gbm = verification.get("gbm_overall", {})
-        persistence = verification.get("persistence", {}).get("metrics", {})
 
-        horizons = sorted(
-            {h for h in gbm.keys() if isinstance(gbm.get(h), dict)} |
-            {h for h in persistence.keys()},
-            key=lambda h: int(h.split("=")[-1]) if "=" in h else h,
-        )
-        horizon_labels = [f"h{h.split('=')[-1]}" if "=" in h else h for h in horizons]
+        # Use only horizons for which a GBM prediction CSV exists.
+        available_horizons = [h for h in [1, 6, 12, 24, 48, 72, 168]
+                              if os.path.exists(os.path.join(OUTPUT_DIR, "models", f"gbm_predictions_h{h}.csv"))]
+        if not available_horizons:
+            available_horizons = [1, 6, 12, 24, 48, 72]
 
-        if horizons:
-            gbm_rmse = []
-            persistence_rmse = []
-            gbm_nse = []
-            persistence_nse = []
-            for h in horizons:
-                g = gbm.get(h, {})
-                p = persistence.get(h, {})
-                gbm_rmse.append(g.get("RMSE_cm", g.get("rmse")))
-                persistence_rmse.append(p.get("rmse"))
-                gbm_nse.append(g.get("NSE"))
-                persistence_nse.append(p.get("nse"))
+        # Compute GBM metrics from CSVs; persistence is recomputed from the same
+        # measured series by shifting actuals by the horizon.
+        gbm_metrics: dict[int, dict[str, Any]] = {}
+        persistence_metrics: dict[int, dict[str, Any]] = {}
+        for h in available_horizons:
+            pred_path = os.path.join(OUTPUT_DIR, "models", f"gbm_predictions_h{h}.csv")
+            gbm_metrics[h] = self._compute_csv_metrics(pred_path)
+            try:
+                import pandas as pd
+                import numpy as np
 
+                df = pd.read_csv(pred_path)
+                df = df.dropna(subset=["actual"])
+                actual = df["actual"].astype(float)
+                persistence_pred = actual.shift(-h)
+                mask = persistence_pred.notna()
+                if mask.sum() > 0:
+                    p_error = persistence_pred[mask] - actual[mask]
+                    ss_res = float(np.sum(p_error**2))
+                    ss_tot = float(np.sum((actual[mask] - actual[mask].mean())**2))
+                    persistence_metrics[h] = {
+                        "rmse": float(np.sqrt(np.mean(p_error**2))),
+                        "nse": 1 - ss_res / ss_tot if ss_tot != 0 else float("nan"),
+                    }
+            except Exception:
+                persistence_metrics[h] = {}
+
+        horizon_labels = [f"h{h}" for h in available_horizons]
+        gbm_rmse = [gbm_metrics[h].get("rmse") for h in available_horizons]
+        persistence_rmse = [persistence_metrics.get(h, {}).get("rmse") for h in available_horizons]
+        gbm_nse = [gbm_metrics[h].get("nse") for h in available_horizons]
+        persistence_nse = [persistence_metrics.get(h, {}).get("nse") for h in available_horizons]
+
+        if available_horizons:
             charts.append({
                 "id": "chart-rmse-comparison",
                 "title": "RMSE by Horizon",
@@ -788,7 +867,7 @@ class BuildHtmlReportTool(BaseTool):
                 ],
                 "layout": {
                     "xaxis": {"title": "Forecast horizon"},
-                    "yaxis": {"title": "NSE", "range": [-1, 1]},
+                    "yaxis": {"title": "NSE"},
                     "margin": {"t": 40, "b": 50},
                     "legend": {"orientation": "h", "y": -0.2},
                     "shapes": [
