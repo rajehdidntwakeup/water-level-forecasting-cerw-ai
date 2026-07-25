@@ -55,6 +55,7 @@ from thesiscrew.tools.report_writer_tool import (
     ReadArtifactTool,
 )
 from thesiscrew.tools.html_report_tool import BuildHtmlReportTool
+from thesiscrew.tools.forward_forecast_tool import BuildForwardForecastsTool
 
 __all__ = [
     # Pegelonline
@@ -107,4 +108,6 @@ __all__ = [
     "ReadArtifactTool",
     # HTML report
     "BuildHtmlReportTool",
+    # Forward forecasts
+    "BuildForwardForecastsTool",
 ]

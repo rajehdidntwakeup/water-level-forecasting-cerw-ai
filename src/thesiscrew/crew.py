@@ -62,6 +62,7 @@ from thesiscrew.tools.report_writer_tool import (
     RenderMetricsTool,
 )
 from thesiscrew.tools.html_report_tool import BuildHtmlReportTool
+from thesiscrew.tools.forward_forecast_tool import BuildForwardForecastsTool
 
 import litellm
 import urllib3
@@ -305,6 +306,7 @@ class Thesiscrew(CrewCallbacks):
                 ReadArtifactTool(),
                 ListDataFilesTool(),
                 BuildHtmlReportTool(),
+                BuildForwardForecastsTool(),
             ],
         )
 

@@ -673,8 +673,14 @@ class CrewCallbacks:
 
             if needs_rebuild:
                 _safe_print("[final-report] Rebuilding output/final_report.html deterministically...")
+                try:
+                    from thesiscrew.tools.forward_forecast_tool import BuildForwardForecastsTool
+                    _safe_print("[final-report] Refreshing forward forecasts first...")
+                    BuildForwardForecastsTool()._run()
+                except Exception as e:
+                    _safe_print(f"[final-report] Forward forecast refresh warning: {e}")
                 tool = BuildHtmlReportTool()
-                result = tool._run(style="academic", include_charts=True)
+                result = tool._run(style="academic", include_charts=True, focus="forecasting")
                 _safe_print(f"[final-report] {result}")
             else:
                 _safe_print("[final-report] output/final_report.html is present and valid.")

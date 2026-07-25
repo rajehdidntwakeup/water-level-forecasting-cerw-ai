@@ -37,6 +37,10 @@ class BuildHtmlReportInput(BaseModel):
         default=True,
         description="Embed interactive Plotly charts from numeric artifacts.",
     )
+    focus: str = Field(
+        default="full",
+        description="Report scope: 'full' (all thesis sections) or 'forecasting' (only forecast results, charts, and key setup).",
+    )
 
 
 class BuildHtmlReportTool(BaseTool):
@@ -49,11 +53,22 @@ class BuildHtmlReportTool(BaseTool):
     )
     args_schema: type[BaseModel] = BuildHtmlReportInput
 
-    def _run(self, style: str = "academic", include_charts: bool = True) -> str:
+    def _run(
+        self,
+        style: str = "academic",
+        include_charts: bool = True,
+        focus: str = "full",
+    ) -> str:
         output_path = os.path.join(OUTPUT_DIR, "final_report.html")
-        sources = self._collect_sources()
+        forecasting_focus = focus.lower() == "forecasting"
+        sources = self._collect_forecast_sources() if forecasting_focus else self._collect_sources()
 
-        sections = []
+        sections: list[tuple[str, str]] = []
+        if forecasting_focus:
+            setup_section = self._build_forecast_setup_section()
+            if setup_section:
+                sections.append(("Forecast Setup", setup_section))
+
         for title, path in sources:
             if not os.path.exists(path):
                 sections.append(
@@ -76,8 +91,10 @@ class BuildHtmlReportTool(BaseTool):
         verification = self._load_verification_inputs()
         charts = self._build_charts(verification) if include_charts else []
         metrics = self._build_metrics_summary(verification)
+        if forecasting_focus:
+            metrics.update(self._build_forecast_setup_metrics())
 
-        html = self._render_document(sections, charts, metrics, style=style)
+        html = self._render_document(sections, charts, metrics, style=style, focus=focus)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(html)
@@ -87,7 +104,7 @@ class BuildHtmlReportTool(BaseTool):
             _safe_print(f"[build_html_report] validation warning: {validation.get('reason', 'unknown')}")
 
         status = "valid" if validation["valid"] else f"warning: {validation['reason']}"
-        return f"HTML final report written to {output_path} ({len(html)} chars, {validation['sections']} sections, {validation['charts']} charts, {status})"
+        return f"HTML final report written to {output_path} ({len(html)} chars, {validation['sections']} sections, {validation['charts']} charts, focus={focus}, {status})"
 
 
     @staticmethod
@@ -166,6 +183,126 @@ class BuildHtmlReportTool(BaseTool):
                 continue
             result.append((title, path))
         return result
+
+    def _collect_forecast_sources(self) -> list[tuple[str, str]]:
+        """Return only forecast-relevant sources for the forecasting-focused report.
+
+        The focused report keeps the narrative short: verification details only.
+        Forecast setup and charts are generated separately and inserted in the
+        desired menu/main order.
+        """
+        candidates = [
+            ("Verification Details", os.path.join(OUTPUT_DIR, "phase5_verification.md")),
+        ]
+        result: list[tuple[str, str]] = []
+        for title, path in candidates:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                md = f.read()
+            md = self._unwrap_fenced_block(md)
+            if self._is_agent_completion_message(md) or not md.strip():
+                continue
+            result.append((title, path))
+        return result
+
+    @staticmethod
+    def _format_target_label(target: str) -> str:
+        """Convert a snake_case target variable into a human-readable label."""
+        if not target:
+            return target
+        lower = target.lower()
+        # Recognised units so the label reads nicely.
+        unit_map = {
+            "_cm": " (cm)",
+            "_m3s": " (m³/s)",
+            "_m3_s": " (m³/s)",
+            "_cms": " (m³/s)",
+            "_c": " (°C)",
+            "_celsius": " (°C)",
+            "_mm": " (mm)",
+            "_kmh": " (km/h)",
+            "_m": " (m)",
+        }
+        unit = ""
+        for suffix, label in unit_map.items():
+            if lower.endswith(suffix):
+                unit = label
+                target = target[: -len(suffix)]
+                break
+        words = target.replace("_", " ").split()
+        return " ".join(w.capitalize() for w in words) + unit
+
+    def _build_forecast_setup_section(self) -> str:
+        """Build a compact HTML section describing the forecast setup from inputs."""
+        input_path = os.path.join(os.path.dirname(OUTPUT_DIR), "input", "research_area.json")
+        if not os.path.exists(input_path):
+            input_path = "input/research_area.json"
+        setup = {
+            "station": "Korneuburg",
+            "river": "Donau (Danube)",
+            "country": "Austria",
+            "latitude": 48.345,
+            "longitude": 16.337,
+            "target": "water_level_cm",
+            "horizons": [1, 6, 12, 24, 48, 72, 168],
+            "primary_model": "Gradient Boosting Machine",
+        }
+        try:
+            with open(input_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            setup["station"] = data.get("primary_station", setup["station"])
+            setup["river"] = data.get("river", setup["river"])
+            setup["country"] = data.get("country", setup["country"])
+            setup["latitude"] = data.get("latitude", setup["latitude"])
+            setup["longitude"] = data.get("longitude", setup["longitude"])
+            setup["target"] = data.get("target_variable", setup["target"])
+            setup["horizons"] = data.get("forecast_horizons_hours", setup["horizons"])
+        except Exception:
+            pass
+
+        target_label = self._format_target_label(str(setup["target"]))
+        horizons_html = ", ".join(f"<span class=\"horizon-tag\">+{h}h</span>" for h in setup["horizons"])
+        return f"""<div class=\"forecast-setup\">
+<div class=\"setup-card\">
+<h3>Station</h3>
+<p><strong>{_html.escape(str(setup['station']))}</strong></p>
+<p>{_html.escape(str(setup['river']))}, {_html.escape(str(setup['country']))}</p>
+<p class=\"coords\">{setup['latitude']:.3f}°N, {setup['longitude']:.3f}°E</p>
+</div>
+<div class=\"setup-card\">
+<h3>Target</h3>
+<p><strong>{_html.escape(target_label)}</strong></p>
+<p>Hourly {target_label.lower()} forecast</p>
+</div>
+<div class=\"setup-card\">
+<h3>Horizons</h3>
+<p class=\"horizons\">{horizons_html}</p>
+</div>
+<div class=\"setup-card\">
+<h3>Primary Model</h3>
+<p><strong>{_html.escape(str(setup['primary_model']))}</strong></p>
+<p>One model per horizon</p>
+</div>
+</div>"""
+
+    def _build_forecast_setup_metrics(self) -> dict[str, Any]:
+        """Return static setup metadata for the forecasting hero cards."""
+        input_path = os.path.join(os.path.dirname(OUTPUT_DIR), "input", "research_area.json")
+        if not os.path.exists(input_path):
+            input_path = "input/research_area.json"
+        target = "water_level_cm"
+        try:
+            with open(input_path, "r", encoding="utf-8") as f:
+                target = json.load(f).get("target_variable", target)
+        except Exception:
+            pass
+        return {
+            "station": "Korneuburg",
+            "river": "Donau (Danube)",
+            "target": self._format_target_label(target),
+            "model": "Gradient Boosting Machine",
+        }
 
     @staticmethod
     def _is_agent_completion_message(text: str) -> bool:
@@ -416,41 +553,76 @@ class BuildHtmlReportTool(BaseTool):
         return f"h={digits}" if digits else key
 
     def _normalize_verification(self, verification: dict[str, Any]) -> dict[str, Any]:
-        """Normalize mixed verification artifact formats to a consistent schema."""
+        """Normalize mixed verification artifact formats to a consistent schema.
+
+        Handles flat dict-of-dicts, list-of-dicts under 'horizons', and the
+        nested {"horizons": {"1": {...}, ...}} format produced by the baseline
+        verification tool."""
         normalized: dict[str, Any] = {}
 
-        # GBM overall metrics
-        gbm_raw = verification.get("gbm_overall", {})
-        gbm: dict[str, Any] = {}
-        for k, v in gbm_raw.items():
-            if not isinstance(v, dict):
+        def _extract_metrics(raw: Any, nested_key: str | None = None) -> dict[str, Any]:
+            """Pull horizon-keyed metric dicts out of a variety of wrappers."""
+            out: dict[str, Any] = {}
+            if not isinstance(raw, dict):
+                return out
+
+            # List-of-dicts under 'horizons'.
+            horizons_val = raw.get("horizons")
+            if isinstance(horizons_val, list):
+                for entry in horizons_val:
+                    if not isinstance(entry, dict):
+                        continue
+                    h_key = entry.get("horizon_hours", entry.get("horizon", entry.get("h")))
+                    if h_key is None:
+                        continue
+                    h = self._normalize_horizon_key(str(h_key))
+                    out[h] = dict(entry)
+            # Nested dict-of-dicts under 'horizons'.
+            elif isinstance(horizons_val, dict):
+                for h_key, metrics in horizons_val.items():
+                    if not isinstance(metrics, dict):
+                        continue
+                    h = self._normalize_horizon_key(str(h_key))
+                    out[h] = dict(metrics)
+
+            # Flat dict-of-dicts at the top level (skip structural/metadata keys).
+            skip_keys = {"horizons", "prediction_files", "source_file", "column", "metadata", "notes"}
+            if nested_key and isinstance(raw.get(nested_key), dict):
+                source = raw[nested_key]
+            else:
+                source = raw
+            for k, v in source.items():
+                if k in skip_keys or not isinstance(v, dict):
+                    continue
+                h = self._normalize_horizon_key(str(k))
+                if h not in out:
+                    out[h] = dict(v)
+            return out
+
+        # GBM overall metrics.
+        gbm = _extract_metrics(verification.get("gbm_overall", {}), nested_key=None)
+        for h, metrics in gbm.items():
+            if not isinstance(metrics, dict):
                 continue
-            h = self._normalize_horizon_key(k)
-            gbm[h] = dict(v)
-            # Normalize metric key names.
-            if "RMSE" in gbm[h] and "RMSE_cm" not in gbm[h]:
-                gbm[h]["RMSE_cm"] = gbm[h].pop("RMSE")
-            if "rmse" in gbm[h] and "RMSE_cm" not in gbm[h]:
-                gbm[h]["RMSE_cm"] = gbm[h]["rmse"]
-            if "nse" in gbm[h] and "NSE" not in gbm[h]:
-                gbm[h]["NSE"] = gbm[h]["nse"]
+            if "RMSE" in metrics and "RMSE_cm" not in metrics:
+                metrics["RMSE_cm"] = metrics.pop("RMSE")
+            if "rmse" in metrics and "RMSE_cm" not in metrics:
+                metrics["RMSE_cm"] = metrics["rmse"]
+            if "nse" in metrics and "NSE" not in metrics:
+                metrics["NSE"] = metrics["nse"]
         normalized["gbm_overall"] = gbm
 
-        # Persistence metrics
-        persistence_raw = verification.get("persistence", {})
-        persistence: dict[str, Any] = {}
-        if isinstance(persistence_raw, dict):
-            # Could be {"metrics": {"h=1": ...}} or {"h1": ...}
-            source = persistence_raw.get("metrics", persistence_raw)
-            for k, v in source.items():
-                if not isinstance(v, dict):
-                    continue
-                h = self._normalize_horizon_key(k)
-                persistence[h] = dict(v)
-                if "rmse" not in persistence[h] and "RMSE" in persistence[h]:
-                    persistence[h]["rmse"] = persistence[h].pop("RMSE")
-                if "nse" not in persistence[h] and "NSE" in persistence[h]:
-                    persistence[h]["nse"] = persistence[h].pop("NSE")
+        # Persistence metrics.
+        persistence = _extract_metrics(verification.get("persistence", {}), nested_key="metrics")
+        for h, metrics in persistence.items():
+            if not isinstance(metrics, dict):
+                continue
+            if "rmse" not in metrics and "RMSE" in metrics:
+                metrics["rmse"] = metrics.pop("RMSE")
+            if "nse" not in metrics and "NSE" in metrics:
+                metrics["nse"] = metrics.pop("NSE")
+            if "RMSE_cm" in metrics and "rmse" not in metrics:
+                metrics["rmse"] = metrics["RMSE_cm"]
         normalized["persistence"] = {"metrics": persistence}
 
         if "skill_vs_persistence" in verification:
@@ -458,16 +630,53 @@ class BuildHtmlReportTool(BaseTool):
         return normalized
 
     def _load_verification_inputs(self) -> dict[str, Any]:
-        """Load verification artifacts, merging sources for completeness."""
+        """Load verification artifacts and merge the best available metrics per horizon.
+
+        Strategy:
+          * GBM: prefer the detailed verification_inputs values where they are valid
+            (no error key), otherwise fall back to verification_baseline.
+          * Persistence: verification_inputs covers all seven horizons, so use it
+            as the primary source and fill any gaps from verification_baseline.
+          * Preserve walk-forward, stratified, and metadata from verification_inputs.
+        """
         inputs = self._load_json_artifact(os.path.join(OUTPUT_DIR, "models", "verification_inputs.json"))
         baseline = self._load_json_artifact(os.path.join(OUTPUT_DIR, "models", "verification_baseline.json"))
 
+        norm_inputs = self._normalize_verification(inputs) if inputs else {}
+        norm_baseline = self._normalize_verification(baseline) if baseline else {}
+
         merged: dict[str, Any] = {}
-        if inputs:
-            merged.update(inputs)
-        if baseline:
-            merged.update(baseline)
-        return self._normalize_verification(merged)
+
+        # Keep non-metric blocks from the detailed verification file.
+        for key in ("walk_forward", "stratified", "metadata"):
+            if inputs and key in inputs:
+                merged[key] = inputs[key]
+
+        # GBM: inputs first when valid, baseline as fallback.
+        gbm: dict[str, Any] = {}
+        for source in (norm_inputs, norm_baseline):
+            for h, metrics in source.get("gbm_overall", {}).items():
+                if not isinstance(metrics, dict) or h in gbm:
+                    continue
+                if "error" in metrics:
+                    continue
+                gbm[h] = metrics
+        merged["gbm_overall"] = gbm
+
+        # Persistence: inputs has the full set, baseline fills gaps.
+        persistence: dict[str, Any] = {}
+        for source in (norm_inputs, norm_baseline):
+            for h, metrics in source.get("persistence", {}).get("metrics", {}).items():
+                if isinstance(metrics, dict) and h not in persistence:
+                    persistence[h] = metrics
+        merged["persistence"] = {"metrics": persistence}
+
+        if inputs and "skill_vs_persistence" in inputs:
+            merged["skill_vs_persistence"] = inputs["skill_vs_persistence"]
+        elif baseline and "skill_vs_persistence" in baseline:
+            merged["skill_vs_persistence"] = baseline["skill_vs_persistence"]
+
+        return merged
 
     def _build_metrics_summary(self, verification: dict[str, Any]) -> dict[str, Any]:
         """Extract key headline metrics for the hero cards."""
@@ -630,6 +839,76 @@ class BuildHtmlReportTool(BaseTool):
             except Exception:
                 continue
 
+        # Forward-looking forecast chart: recent measured + future predicted points.
+        recent_path = os.path.join(OUTPUT_DIR, "models", "forward_predictions_recent.csv")
+        forward_path = os.path.join(OUTPUT_DIR, "models", "forward_predictions.csv")
+        if os.path.exists(recent_path) and os.path.exists(forward_path):
+            try:
+                import pandas as pd
+
+                recent_df = pd.read_csv(recent_path, parse_dates=["timestamp"])
+                forward_df = pd.read_csv(forward_path, parse_dates=["timestamp"])
+                forward_df = forward_df.dropna(subset=["predicted"])
+
+                recent_labels = [str(t) for t in recent_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M")]
+                future_labels = [str(t) for t in forward_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M")]
+
+                charts.append({
+                    "id": "chart-forward-forecast",
+                    "title": "Forward Forecast (Measured + Predicted)",
+                    "data": [
+                        {
+                            "x": recent_labels,
+                            "y": recent_df["actual"].tolist(),
+                            "name": "Measured (recent)",
+                            "type": "scatter",
+                            "mode": "lines",
+                            "line": {"width": 2, "color": "#0f172a"},
+                        },
+                        {
+                            "x": future_labels,
+                            "y": forward_df["predicted"].tolist(),
+                            "name": "Predicted",
+                            "type": "scatter",
+                            "mode": "lines+markers",
+                            "marker": {"size": 8, "color": "#2563eb"},
+                            "line": {"width": 2, "dash": "dash", "color": "#2563eb"},
+                        },
+                    ],
+                    "layout": {
+                        "xaxis": {"title": "Time"},
+                        "yaxis": {"title": "Water level (cm)"},
+                        "margin": {"t": 40, "b": 50},
+                        "legend": {"orientation": "h", "y": -0.2},
+                        "shapes": [
+                            {
+                                "type": "line",
+                                "x0": recent_labels[-1] if recent_labels else None,
+                                "x1": recent_labels[-1] if recent_labels else None,
+                                "y0": 0,
+                                "y1": 1,
+                                "xref": "x",
+                                "yref": "paper",
+                                "line": {"color": "#94a3b8", "dash": "dot", "width": 1},
+                            }
+                        ],
+                        "annotations": [
+                            {
+                                "x": recent_labels[-1] if recent_labels else None,
+                                "y": 1,
+                                "xref": "x",
+                                "yref": "paper",
+                                "text": "now",
+                                "showarrow": False,
+                                "font": {"color": "#94a3b8", "size": 11},
+                                "xanchor": "left",
+                            }
+                        ] if recent_labels else [],
+                    },
+                })
+            except Exception:
+                pass
+
         # Scatter actual vs predicted for the first available short horizon.
         for h in [1, 6, 12, 24, 48, 72, 168]:
             pred_path = os.path.join(OUTPUT_DIR, "models", f"gbm_predictions_h{h}.csv")
@@ -674,20 +953,12 @@ class BuildHtmlReportTool(BaseTool):
         charts: list[dict[str, Any]],
         metrics: dict[str, Any],
         style: str,
+        focus: str = "full",
     ) -> str:
         generated = self._format_datetime()
-        nav_items = "\n".join(
-            f'<li><a href="#section-{i}" data-nav="section-{i}">{_html.escape(title)}</a></li>'
-            for i, (title, _) in enumerate(sections)
-        )
-        section_html = "\n".join(
-            f'<section id="section-{i}" class="report-section">'
-            f'<h2 class="section-title">{_html.escape(title)}</h2>'
-            f'{content}</section>'
-            for i, (title, content) in enumerate(sections)
-        )
+        forecasting_focus = focus.lower() == "forecasting"
 
-        metrics_html = self._render_metrics_cards(metrics)
+        metrics_html = self._render_metrics_cards(metrics, focus=focus)
 
         chart_cards = "\n".join(
             f'<div class="chart-card"><h3>{_html.escape(c["title"])}</h3>'
@@ -700,7 +971,53 @@ class BuildHtmlReportTool(BaseTool):
             for c in charts
         )
 
+        charts_section = ("Interactive Charts", f"""
+    <p class="section-intro">
+      Hover, zoom, and pan each chart. Use the mode bar at the top-right to export
+      figures or toggle traces.
+    </p>
+    {chart_cards}
+""")
+
+        # Forecasting focus: menu and page order = Forecast Setup, Interactive Charts, Verification Details.
+        if forecasting_focus:
+            ordered_sections: list[tuple[str, str]] = []
+            for section in sections:
+                ordered_sections.append(section)
+                if section[0] == "Forecast Setup":
+                    ordered_sections.append(charts_section)
+            # Fallback if Forecast Setup is missing: still include charts.
+            if charts_section not in ordered_sections:
+                ordered_sections.append(charts_section)
+        else:
+            ordered_sections = list(sections) + [charts_section]
+
+        def _section_anchor(title: str, index: int) -> str:
+            return "charts" if title == "Interactive Charts" else f"section-{index}"
+
+        nav_items = "\n".join(
+            f'<li><a href="#{_section_anchor(title, i)}" data-nav="{_section_anchor(title, i)}">{_html.escape(title)}</a></li>'
+            for i, (title, _) in enumerate(ordered_sections)
+        )
+        section_html = "\n".join(
+            f'<section id="{_section_anchor(title, i)}" class="report-section">'
+            f'<h2 class="section-title">{_html.escape(title)}</h2>'
+            f'{content}</section>'
+            for i, (title, content) in enumerate(ordered_sections)
+        )
+
         css = self._academic_css() if style == "academic" else self._dashboard_css()
+        report_label = "Forecast Report" if forecasting_focus else "Thesis Report"
+        hero_title = "Water Level Forecast" if forecasting_focus else "Water Level Forecasting for Korneuburg"
+        hero_lead = (
+            "Hourly water-level forecasts for Korneuburg on the Austrian Danube, "
+            "from +1h to +168h ahead. The report highlights model performance, "
+            "forecast horizons, and measured-vs-predicted comparisons."
+        ) if forecasting_focus else (
+            "A machine-learning approach to hourly water-level forecasting on the Austrian Danube, "
+            "comparing gradient-boosted models against persistence and official forecasts across "
+            "horizons from +1h to +168h."
+        )
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -723,7 +1040,7 @@ class BuildHtmlReportTool(BaseTool):
     </div>
   </div>
   <div class="topbar-meta">
-    <span class="badge">Thesis Report</span>
+    <span class="badge">{report_label}</span>
     <button id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode">🌙</button>
   </div>
 </header>
@@ -731,29 +1048,18 @@ class BuildHtmlReportTool(BaseTool):
   <h2>Sections</h2>
   <ul>
     {nav_items}
-    <li><a href="#charts" data-nav="charts">Interactive Charts</a></li>
   </ul>
   <div class="nav-meta">Generated {generated}</div>
 </nav>
 <div class="main">
   <section class="hero">
-    <h1>Water Level Forecasting for Korneuburg</h1>
+    <h1>{hero_title}</h1>
     <p class="hero-lead">
-      A machine-learning approach to hourly water-level forecasting on the Austrian Danube,
-      comparing gradient-boosted models against persistence and official forecasts across
-      horizons from +1h to +168h.
+      {hero_lead}
     </p>
     {metrics_html}
   </section>
   {section_html}
-  <section id="charts" class="report-section">
-    <h2 class="section-title">Interactive Charts</h2>
-    <p class="section-intro">
-      Hover, zoom, and pan each chart. Use the mode bar at the top-right to export
-      figures or toggle traces.
-    </p>
-    {chart_cards}
-  </section>
   <footer class="report-footer">
     <p>Generated by PegelHub Thesis Crew on {generated}.</p>
     <p>Report sources: Phase 5 Markdown documentation and model verification artifacts.</p>
@@ -803,10 +1109,30 @@ class BuildHtmlReportTool(BaseTool):
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    def _render_metrics_cards(self, metrics: dict[str, Any]) -> str:
+    def _render_metrics_cards(self, metrics: dict[str, Any], focus: str = "full") -> str:
         if not metrics:
             return ""
+        forecasting_focus = focus.lower() == "forecasting"
         cards = []
+
+        # Forecasting focus: lead with the operational setup.
+        if forecasting_focus:
+            if metrics.get("station"):
+                cards.append(
+                    f'<div class="metric-card"><div class="metric-value">{_html.escape(str(metrics["station"]))}</div>'
+                    f'<div class="metric-label">Station</div></div>'
+                )
+            if metrics.get("target"):
+                cards.append(
+                    f'<div class="metric-card"><div class="metric-value">{_html.escape(str(metrics["target"]))}</div>'
+                    f'<div class="metric-label">Target</div></div>'
+                )
+            if metrics.get("model"):
+                cards.append(
+                    f'<div class="metric-card"><div class="metric-value">{_html.escape(str(metrics["model"]))}</div>'
+                    f'<div class="metric-label">Model</div></div>'
+                )
+
         if metrics.get("best_horizon") is not None:
             label = metrics["best_horizon"].replace("=", "=") if isinstance(metrics["best_horizon"], str) else str(metrics["best_horizon"])
             cards.append(
@@ -1078,6 +1404,47 @@ li input[type="checkbox"] { margin-right: 0.4rem; }
 }
 .chart-card h3 { margin-top: 0; margin-bottom: 0.75rem; color: var(--accent-dark); }
 .chart { width: 100%; min-height: 420px; }
+.forecast-setup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 1.5rem 0;
+}
+.setup-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+.setup-card h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-dark);
+}
+.setup-card p {
+  margin: 0.25rem 0;
+  font-size: 0.95rem;
+}
+.setup-card .coords {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.setup-card .horizons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.horizon-tag {
+  background: var(--accent-light);
+  color: var(--accent-dark);
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
 .report-footer {
   margin-top: 1rem;
   padding: 1.5rem;

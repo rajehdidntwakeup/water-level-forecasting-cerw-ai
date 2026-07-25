@@ -521,19 +521,25 @@ frontend_final_report_task:
     - output/models/verification_inputs.json
     - output/models/gbm_predictions_h*.csv
 
-    Then call the build_html_report tool EXACTLY ONCE with these arguments:
-    style='academic', include_charts=True. The tool writes the actual
-    browser-ready HTML to output/final_report.html independently; do NOT try to
-    write HTML yourself. Your task output file (output/phase5_frontend_final_report.md)
-    should be a brief Markdown confirmation of the report.
+    1. Call the build_forward_forecasts tool EXACTLY ONCE to generate
+       output/models/forward_predictions.csv with future water-level predictions
+       for all configured horizons.
+    2. Then call the build_html_report tool EXACTLY ONCE with these arguments:
+       style='academic', include_charts=True, focus='forecasting'. The tool writes
+       the actual browser-ready HTML to output/final_report.html independently;
+       do NOT try to write HTML yourself. Your task output file
+       (output/phase5_frontend_final_report.md) should be a brief Markdown
+       confirmation of the report.
 
-    After the tool runs, confirm that output/final_report.html exists and
-    briefly list the main sections and chart types included.
+    After both tools run, confirm that output/final_report.html exists and
+    briefly list the main forecasting sections and chart types included,
+    including the forward forecast chart.
   expected_output: >
     A brief Markdown confirmation at output/phase5_frontend_final_report.md.
-    The standalone HTML file output/final_report.html must contain the full
-    thesis report with modern CSS styling, navigation sidebar, interactive
-    charts, and responsive layout.
+    The standalone HTML file output/final_report.html must be a forecasting-focused
+    report: it highlights the station, horizons, best model performance, and
+    measured-vs-predicted charts, with modern CSS styling, navigation sidebar,
+    interactive Plotly charts, and responsive layout.
   agent: frontend_specialist
   context:
     - report_writing_task
